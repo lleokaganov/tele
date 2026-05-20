@@ -100,7 +100,27 @@ async function askNicknameIfMissing() {
 askNicknameIfMissing()
 document.getElementById('my-nickname').textContent = nickname || '?'
 
-const client = new WsClient({ xSeed: seeds.xSeed, edSeed: seeds.edSeed })
+// Default relay (telefon.lleo.me) — shown in settings; overridable so anyone
+// can point the app at their own self-hosted server.
+const SRV_DEFAULTS = {
+  url: 'wss://telefon.lleo.me/ws',
+  xpub: '4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06',
+  edpub: 'b835840fd3aba7cc4519513f3bbcb1c35170f6aa97d97c16eabdb2e36710d003',
+}
+function serverConfig() {
+  return {
+    url:   localStorage.getItem('telefon_ws_url')   || '',
+    xpub:  localStorage.getItem('telefon_srv_xpub')  || '',
+    edpub: localStorage.getItem('telefon_srv_edpub') || '',
+  }
+}
+const _srv = serverConfig()
+const client = new WsClient({
+  xSeed: seeds.xSeed, edSeed: seeds.edSeed,
+  url:         _srv.url || undefined,
+  serverXPub:  _srv.xpub  ? hexU8(_srv.xpub)  : undefined,
+  serverEdPub: _srv.edpub ? hexU8(_srv.edpub) : undefined,
+})
 await client.init()
 
 /* =================================== contacts =================================== */
@@ -964,14 +984,14 @@ async function checkAndUpdate() {
   const cur = ($('build-tag')?.textContent || '').replace(/^build\s*/, '').trim()
   let latest = ''
   try {
-    const r = await fetch('https://qlleo.lleo.me/telefon/version.txt?t=' + Date.now())
+    const r = await fetch('https://tele.karlson.ru/apk/version.txt?t=' + Date.now())
     latest = (await r.text()).trim()
   } catch { toast('Не удалось проверить обновление', 'error'); return }
   if (!latest) { toast('Версия на сервере не найдена', 'error'); return }
   if (latest === cur) { toast(`Актуальная версия (${cur})`, 'success'); return }
   if (confirm(`Новая версия ${latest} (у вас ${cur}). Скачать и установить?`)) {
     // _system → Capacitor opens it in the external browser / DownloadManager.
-    window.open('https://qlleo.lleo.me/telefon/telefon-debug.apk?t=' + Date.now(), '_system')
+    window.open('https://tele.karlson.ru/apk/telefon-latest.apk?t=' + Date.now(), '_system')
   }
 }
 
@@ -1400,9 +1420,34 @@ function hexU8(hex) {
 $('btn-settings').onclick = () => {
   $('my-invite').value   = buildInviteUrl(client.qrText(nickname || ''))
   $('my-id-line').textContent = `id: ${u8hex(client.myId)}`
+  // Populate server config fields (saved value, else current default).
+  const c = serverConfig()
+  $('cfg-ws-url').value   = c.url   || SRV_DEFAULTS.url
+  $('cfg-srv-xpub').value = c.xpub  || SRV_DEFAULTS.xpub
+  $('cfg-srv-edpub').value= c.edpub || SRV_DEFAULTS.edpub
   $('dialog-settings').hidden = false
 }
 $('settings-close').onclick = () => { $('dialog-settings').hidden = true }
+$('cfg-save').onclick = () => {
+  const url = $('cfg-ws-url').value.trim()
+  const xp  = $('cfg-srv-xpub').value.trim().toLowerCase()
+  const ep  = $('cfg-srv-edpub').value.trim().toLowerCase()
+  if (xp && !/^[0-9a-f]{64}$/.test(xp)) { toast('X-pub: нужно 64 hex-символа', 'error'); return }
+  if (ep && !/^[0-9a-f]{64}$/.test(ep)) { toast('Ed-pub: нужно 64 hex-символа', 'error'); return }
+  // Only persist values that differ from the default (keep storage clean).
+  url && url !== SRV_DEFAULTS.url   ? localStorage.setItem('telefon_ws_url', url)   : localStorage.removeItem('telefon_ws_url')
+  xp  && xp  !== SRV_DEFAULTS.xpub  ? localStorage.setItem('telefon_srv_xpub', xp)  : localStorage.removeItem('telefon_srv_xpub')
+  ep  && ep  !== SRV_DEFAULTS.edpub ? localStorage.setItem('telefon_srv_edpub', ep) : localStorage.removeItem('telefon_srv_edpub')
+  toast('Сохранено, перезапуск…', 'success')
+  setTimeout(() => location.reload(), 600)
+}
+$('cfg-reset').onclick = () => {
+  localStorage.removeItem('telefon_ws_url')
+  localStorage.removeItem('telefon_srv_xpub')
+  localStorage.removeItem('telefon_srv_edpub')
+  toast('Сброшено на сервер по умолчанию, перезапуск…', 'success')
+  setTimeout(() => location.reload(), 600)
+}
 $('copy-invite').onclick = async () => {
   await navigator.clipboard.writeText($('my-invite').value)
   toast('copied', 'success')

@@ -167,6 +167,21 @@
         <input id="import-file" type="file" accept="text/plain,.txt" hidden />
       </div>
       <div class="dialog-text muted" id="my-id-line">id: —</div>
+
+      <details class="srv-config">
+        <summary>Server (advanced — for self-hosting)</summary>
+        <label>WebSocket URL</label>
+        <input id="cfg-ws-url" type="text" placeholder="wss://your-server/ws" />
+        <label>Server X25519 pub (hex)</label>
+        <input id="cfg-srv-xpub" type="text" placeholder="64 hex chars" />
+        <label>Server Ed25519 pub (hex)</label>
+        <input id="cfg-srv-edpub" type="text" placeholder="64 hex chars" />
+        <div class="dialog-buttons" style="justify-content:flex-start;flex-wrap:wrap">
+          <button id="cfg-save"  class="secondary">Save &amp; reload</button>
+          <button id="cfg-reset" class="secondary">Reset to default</button>
+        </div>
+      </details>
+
       <div class="dialog-buttons">
         <button id="wipe-id"        class="danger">Wipe my identity</button>
         <button id="settings-close" class="primary">Close</button>

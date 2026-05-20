@@ -439,6 +439,30 @@ export class WsSession {
             wasm.__wbindgen_add_to_stack_pointer(16);
         }
     }
+    /**
+     * Override the relay's public keys (for pointing the app at a
+     * self-hosted server). Defaults are the telefon.lleo.me keys baked in
+     * at from_seeds; call this before connecting to use another relay.
+     * @param {Uint8Array} x_pub
+     * @param {Uint8Array} ed_pub
+     */
+    setServerKeys(x_pub, ed_pub) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passArray8ToWasm0(x_pub, wasm.__wbindgen_export);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passArray8ToWasm0(ed_pub, wasm.__wbindgen_export);
+            const len1 = WASM_VECTOR_LEN;
+            wasm.wssession_setServerKeys(retptr, this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
 }
 if (Symbol.dispose) WsSession.prototype[Symbol.dispose] = WsSession.prototype.free;
 

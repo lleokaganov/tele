@@ -40,6 +40,7 @@ export const CMD = {
   FILE_END:        0x26,
   MSG_DELETE:      0x28,
   MSG_EDIT:        0x29,
+  READ_ACK:        0x2A,
   ERROR:           0xFF,
 }
 
@@ -69,6 +70,8 @@ export class WsClient {
     this.edSeed = opts.edSeed || null
     this.session = null
     this.ws = null
+    this.serverXPub = opts.serverXPub || null  // optional self-hosted relay keys
+    this.serverEdPub = opts.serverEdPub || null
     this.msgIdCounter = 1
     this.reconnectMs = RECONNECT_MIN_MS
     this.closedManually = false
@@ -88,6 +91,11 @@ export class WsClient {
       this.session = WsSession.from_seeds(this.xSeed, this.edSeed)
     } else {
       this.session = new WsSession()
+    }
+    // Optional self-hosted relay: override the baked-in server keys.
+    if (this.serverXPub && this.serverEdPub) {
+      try { this.session.setServerKeys(this.serverXPub, this.serverEdPub) }
+      catch (e) { console.warn('setServerKeys failed', e) }
     }
   }
 
@@ -213,6 +221,11 @@ export class WsClient {
   /** Acknowledge that we received a peer's text message. */
   sendDeliveryAck(peerId, msgIdUuid) {
     return this._sendPeer(peerId, CMD.DELIVERY_ACK, uuidToBytes(msgIdUuid))
+  }
+
+  /** Acknowledge that we've read (displayed in an open chat) a peer's message. */
+  sendReadAck(peerId, msgIdUuid) {
+    return this._sendPeer(peerId, CMD.READ_ACK, uuidToBytes(msgIdUuid))
   }
 
   /** Send the metadata that announces an upcoming file transfer.

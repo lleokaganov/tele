@@ -70,6 +70,8 @@ export class WsClient {
     this.edSeed = opts.edSeed || null
     this.session = null
     this.ws = null
+    this.serverXPub = opts.serverXPub || null  // optional self-hosted relay keys
+    this.serverEdPub = opts.serverEdPub || null
     this.msgIdCounter = 1
     this.reconnectMs = RECONNECT_MIN_MS
     this.closedManually = false
@@ -89,6 +91,11 @@ export class WsClient {
       this.session = WsSession.from_seeds(this.xSeed, this.edSeed)
     } else {
       this.session = new WsSession()
+    }
+    // Optional self-hosted relay: override the baked-in server keys.
+    if (this.serverXPub && this.serverEdPub) {
+      try { this.session.setServerKeys(this.serverXPub, this.serverEdPub) }
+      catch (e) { console.warn('setServerKeys failed', e) }
     }
   }
 

@@ -238,6 +238,24 @@ impl WsSession {
         })
     }
 
+    /// Override the relay's public keys (for pointing the app at a
+    /// self-hosted server). Defaults are the telefon.lleo.me keys baked in
+    /// at from_seeds; call this before connecting to use another relay.
+    #[wasm_bindgen(js_name = setServerKeys)]
+    pub fn set_server_keys(&mut self, x_pub: &[u8], ed_pub: &[u8]) -> Result<(), JsValue> {
+        let xp: [u8; 32] = x_pub
+            .try_into()
+            .map_err(|_| JsValue::from_str("server x_pub must be 32 bytes"))?;
+        let ep_bytes: [u8; 32] = ed_pub
+            .try_into()
+            .map_err(|_| JsValue::from_str("server ed_pub must be 32 bytes"))?;
+        let ep = VerifyingKey::from_bytes(&ep_bytes)
+            .map_err(|_| JsValue::from_str("server ed_pub invalid"))?;
+        self.server_x_pub = xp;
+        self.server_ed_pub = ep;
+        Ok(())
+    }
+
     /* ---------- identity getters ---------- */
 
     #[wasm_bindgen(js_name = myId)]
