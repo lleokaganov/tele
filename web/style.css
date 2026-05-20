@@ -52,6 +52,8 @@ input[type=text]:focus { outline: none; border-color: #4685c7 }
 .topbar {
   display: flex; align-items: center; gap: .5rem;
   padding: .6rem 1rem; background: #24272d;
+  /* Clear the status bar (clock / signal icons) at the top. */
+  padding-top: calc(.6rem + env(safe-area-inset-top));
   border-bottom: 1px solid #2f343a;
 }
 .topbar .title {
@@ -105,6 +107,8 @@ input[type=text]:focus { outline: none; border-color: #4685c7 }
 
 .bottombar {
   display: flex; gap: .5rem; padding: .75rem 1rem;
+  /* Keep clear of the Android/iOS bottom navigation bar. */
+  padding-bottom: calc(.75rem + env(safe-area-inset-bottom));
   background: #24272d; border-top: 1px solid #2f343a;
 }
 .bottombar button { flex: 1 }
@@ -186,6 +190,19 @@ input[type=text]:focus { outline: none; border-color: #4685c7 }
 .msg.editing { outline: 2px solid #c93; outline-offset: 1px; }
 .msg-edited { font-size: .7rem; color: rgba(255,255,255,.45); }
 
+/* The text must stay user-selectable (WebView often disables selection
+ * globally) so links can be selected/copied natively. */
+.msg-text { -webkit-user-select: text; user-select: text; }
+
+/* Per-message actions handle (⋮). */
+.msg-actions {
+  background: transparent; border: 0; padding: 0 .1rem; margin: 0;
+  color: rgba(255,255,255,.45); font-size: 1.05rem; line-height: 1;
+  cursor: pointer; flex: 0 0 auto; align-self: center;
+  -webkit-user-select: none; user-select: none;
+}
+.msg-actions:hover { color: #fff }
+
 .edit-banner {
   display: flex; align-items: center; justify-content: space-between;
   gap: .5rem; padding: .35rem .75rem;
@@ -209,6 +226,8 @@ input[type=text]:focus { outline: none; border-color: #4685c7 }
 
 .chat-input {
   display: flex; gap: .5rem; padding: .5rem .75rem;
+  /* Keep the text field above the Android/iOS bottom navigation bar. */
+  padding-bottom: calc(.5rem + env(safe-area-inset-bottom));
   border-top: 1px solid #2f343a; align-items: center;
 }
 .chat-input input[type=text] { flex: 1 }

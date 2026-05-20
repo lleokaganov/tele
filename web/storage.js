@@ -21,10 +21,15 @@ export const Storage = {
       const r = await DB.free()
       console.info('IDB free:', r.s || '(unavailable)')
     } catch {}
-    if (!await DB.db_exist(DB_NAME)) await DB.add_db(DB_NAME)
+    console.log('[boot] db_exist?')
+    const exists = await DB.db_exist(DB_NAME)
+    console.log('[boot] db_exist =', exists)
+    if (!exists) { await DB.add_db(DB_NAME); console.log('[boot] db created') }
     for (const t of TABLES) {
+      console.log('[boot] table', t)
       if (!await DB.table_exist(DB_NAME, t)) await DB.add_table(DB_NAME, t, 'id')
     }
+    console.log('[boot] storage init complete')
   },
 
   // ---- messages ----

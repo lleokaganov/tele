@@ -10,7 +10,12 @@
 const PARAM = 'peer'
 
 export function buildInviteUrl(qrText) {
-  const u = new URL(window.location.href)
+  // In a Capacitor native build window.location is the local scheme
+  // (https://localhost) — useless to share. Point invites at the real
+  // public site instead. In the browser PWA, use the current origin.
+  const native = window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function'
+    && window.Capacitor.isNativePlatform()
+  const u = new URL(native ? 'https://telefon.lleo.me/' : window.location.href)
   u.search = ''
   u.hash = ''
   u.searchParams.set(PARAM, qrText)

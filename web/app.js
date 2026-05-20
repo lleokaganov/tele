@@ -8,7 +8,18 @@ import { loadSeeds, saveSeeds, generateSeeds, wipeSeeds,
 import { buildInviteUrl, readInviteFromUrl, clearInviteFromUrl }  from './invite.js'
 import { Storage, isFileRef, fileIdOf }                           from './storage.js'
 
-await Storage.init()
+// Watchdog: if IndexedDB init never settles in the WebView, surface it
+// rather than hanging silently before any UI is wired up.
+const _storageWatch = setTimeout(() => {
+  window.__diag && window.__diag('boot: Storage.init() still pending after 6s (IndexedDB hung in WebView?)')
+}, 6000)
+try {
+  await Storage.init()
+} catch (e) {
+  window.__diag && window.__diag('boot: Storage.init() failed: ' + (e && e.stack || e))
+}
+clearTimeout(_storageWatch)
+console.log('[boot] storage ready, wiring UI')
 
 const $ = (id) => document.getElementById(id)
 
@@ -83,7 +94,10 @@ async function askNicknameIfMissing() {
     })
   })
 }
-await askNicknameIfMissing()
+// Fire-and-forget: the nickname dialog is a modal overlay, so it visually
+// blocks interaction until filled — but we must NOT await it, or the rest
+// of boot (connect + button handlers) never runs and the UI stays dead.
+askNicknameIfMissing()
 document.getElementById('my-nickname').textContent = nickname || '?'
 
 const client = new WsClient({ xSeed: seeds.xSeed, edSeed: seeds.edSeed })
@@ -242,6 +256,9 @@ async function openCallView(idHex) {
   await refreshChat()
   resetCallButtons('idle')
   showScreen('call')
+  // Opening the chat means the user is looking at it — read-ack all
+  // incoming messages so the sender sees ✓✓.
+  markHistoryRead(idHex)
   // Push a history entry so the browser/system back-button (Backspace on
   // desktop, swipe-back on Android, etc.) closes the call instead of
   // leaving it running invisibly behind the contacts list.
@@ -261,6 +278,25 @@ window.addEventListener('popstate', (e) => {
     showScreen('contacts')
   }
 })
+
+// Android hardware/gesture back button. Capacitor does NOT route it through
+// our SPA history by default — without this it just exits the app. Mirror
+// the popstate logic: close lightbox → leave call → otherwise minimize.
+;(() => {
+  const CapApp = window.Capacitor?.Plugins?.App
+  if (!CapApp || !CapApp.addListener) return
+  CapApp.addListener('backButton', () => {
+    if (!$('lightbox').hidden) { closeLightbox(); return }
+    if ($('screen-call').classList.contains('active')) {
+      call.hangup()
+      currentPeerId = null
+      showScreen('contacts')
+      return
+    }
+    // On the contacts root — send the app to background rather than killing it.
+    CapApp.minimizeApp ? CapApp.minimizeApp() : CapApp.exitApp()
+  })
+})()
 
 /* =================================== lightbox =================================== */
 
@@ -334,6 +370,21 @@ const renderedMessages = new Map()  // msgId -> DOM element
 // Inbound chunks staging: file_id -> [chunks indexed by chunk_idx].
 const inboundChunks = new Map()
 const CHUNK_BYTES   = 32 * 1024   // 32 KB per FILE_CHUNK frame
+
+// Read-ack incoming messages when the chat is opened. Track which ids we've
+// already acked this session so re-opening the chat doesn't re-blast read-acks
+// for the whole history every time.
+const readAcked = new Set()
+async function markHistoryRead(idHex) {
+  const peerId = hexU8(idHex)
+  const rows = await Storage.history(idHex)
+  for (const m of rows) {
+    if (m.dir === 'in' && !readAcked.has(m.id)) {
+      client.sendReadAck(peerId, m.id)
+      readAcked.add(m.id)
+    }
+  }
+}
 
 async function refreshChat() {
   const box = $('chat')
@@ -529,6 +580,19 @@ function makeMsgShell(m) {
     tick.textContent = statusGlyph(m.status)
     row.appendChild(tick)
   }
+  // Explicit actions handle (⋮). Tapping it opens the per-message menu, so we
+  // don't need long-press on the bubble — that lets native text selection
+  // (long-press to select/copy a link) work normally.
+  const dots = document.createElement('button')
+  dots.className = 'msg-actions'
+  dots.textContent = '⋮'
+  dots.title = 'actions'
+  dots.onclick = (e) => {
+    e.stopPropagation()
+    const r = dots.getBoundingClientRect()
+    openMsgMenu(row, r.left, r.bottom)
+  }
+  row.appendChild(dots)
   renderedMessages.set(m.id, row)
   return row
 }
@@ -621,6 +685,7 @@ const call = new CallManager(client, {
     if (currentPeerId === idHex) {
       appendChatRow({ id: msgId, dir: 'in', body: text, status: 'received' })
       $('chat').scrollTop = $('chat').scrollHeight
+      client.sendReadAck(peerId, msgId); readAcked.add(msgId)  // chat open → read right away
     } else {
       const p = peerBook[idHex]
       toast(`${p?.label || idHex.slice(0, 8)}: ${text}`)
@@ -629,6 +694,10 @@ const call = new CallManager(client, {
   onDelivered: async (peerId, msgId) => {
     await Storage.markStatus(msgId, 'delivered')
     updateRowStatus(msgId, 'delivered')
+  },
+  onRead: async (peerId, msgId) => {
+    await Storage.markStatus(msgId, 'read')
+    updateRowStatus(msgId, 'read')
   },
   onMsgDelete: async (peerId, msgId) => {
     const idHex = u8hex(peerId)
@@ -677,6 +746,7 @@ const call = new CallManager(client, {
       const row = await renderFileMessage({ id: msgId, dir: 'in', body: `%${fileId}`, status: 'received' })
       $('chat').appendChild(row)
       $('chat').scrollTop = $('chat').scrollHeight
+      client.sendReadAck(peerId, msgId); readAcked.add(msgId)  // chat open → read right away
     } else {
       const p = peerBook[idHex]
       toast(`${p?.label || idHex.slice(0,8)} sent: ${meta.name}`)
@@ -762,7 +832,22 @@ client.onServer = (msg) => {
   }
 }
 
-await client.connect()
+// Do NOT await: a hung WASM/WS connect must not block wiring up the UI
+// (otherwise every button below stays dead). Connect in the background.
+console.log('[boot] dispatching connect')
+client.connect()
+  .then(() => console.log('[boot] connect() resolved'))
+  .catch((e) => {
+    console.error('[boot] connect failed:', e)
+    window.__diag && window.__diag('connect failed: ' + (e && e.stack || e))
+  })
+// Watchdog: if the WASM module or socket never settles, surface it instead
+// of silently sitting on "connecting".
+setTimeout(() => {
+  if (!client.session) {
+    window.__diag && window.__diag('Still initializing after 10s — WASM (ws_wasm_bg.wasm) likely failed to load in the WebView. Check MIME/path.')
+  }
+}, 10000)
 renderContacts()
 
 /* =================================== invite link auto-import =================================== */
@@ -865,9 +950,29 @@ window.addEventListener('appinstalled', () => {
   $('btn-install').hidden = true
   toast('App installed', 'success')
 })
-// Hide the button on installed launches (display-mode: standalone).
-if (matchMedia('(display-mode: standalone)').matches) {
-  $('btn-install').hidden = true
+const NATIVE_APP = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function'
+  && window.Capacitor.isNativePlatform())
+if (NATIVE_APP) {
+  // In the native app there's nothing to "install" — repurpose the button
+  // as "Update" (check the server for a newer build and download it).
+  $('btn-install').textContent = '⬆ Обновить'
+} else if (matchMedia('(display-mode: standalone)').matches) {
+  $('btn-install').hidden = true  // installed PWA — nothing to install
+}
+
+async function checkAndUpdate() {
+  const cur = ($('build-tag')?.textContent || '').replace(/^build\s*/, '').trim()
+  let latest = ''
+  try {
+    const r = await fetch('https://qlleo.lleo.me/telefon/version.txt?t=' + Date.now())
+    latest = (await r.text()).trim()
+  } catch { toast('Не удалось проверить обновление', 'error'); return }
+  if (!latest) { toast('Версия на сервере не найдена', 'error'); return }
+  if (latest === cur) { toast(`Актуальная версия (${cur})`, 'success'); return }
+  if (confirm(`Новая версия ${latest} (у вас ${cur}). Скачать и установить?`)) {
+    // _system → Capacitor opens it in the external browser / DownloadManager.
+    window.open('https://qlleo.lleo.me/telefon/telefon-debug.apk?t=' + Date.now(), '_system')
+  }
 }
 
 function manualInstallHint() {
@@ -882,6 +987,7 @@ function manualInstallHint() {
 }
 
 $('btn-install').onclick = async () => {
+  if (NATIVE_APP) { await checkAndUpdate(); return }
   if (deferredInstallPrompt) {
     deferredInstallPrompt.prompt()
     await deferredInstallPrompt.userChoice
@@ -1008,32 +1114,15 @@ function openDeleteDialog(msgId, isOut) {
   document.body.appendChild(overlay)
 }
 
-// Gesture wiring on the chat container: right-click (desktop) and
-// long-press (touch) open the per-message action menu.
-;(() => {
-  const chat = $('chat')
-  chat.addEventListener('contextmenu', (e) => {
-    const row = e.target.closest('.msg')
-    if (!row || !row.dataset.id) return
-    e.preventDefault()
-    openMsgMenu(row, e.clientX, e.clientY)
-  })
-  let pressTimer = null
-  const startPress = (e) => {
-    const row = e.target.closest('.msg')
-    if (!row || !row.dataset.id) return
-    const t = e.touches[0]
-    pressTimer = setTimeout(() => {
-      pressTimer = null
-      openMsgMenu(row, t.clientX, t.clientY)
-    }, 500)
-  }
-  const cancelPress = () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null } }
-  chat.addEventListener('touchstart', startPress,  { passive: true })
-  chat.addEventListener('touchend',   cancelPress, { passive: true })
-  chat.addEventListener('touchmove',  cancelPress, { passive: true })
-  chat.addEventListener('touchcancel',cancelPress, { passive: true })
-})()
+// Desktop convenience: right-click a message also opens the action menu.
+// Touch uses the explicit ⋮ handle (no long-press) so native text selection
+// keeps working — long-press on the text selects/copies as usual.
+$('chat').addEventListener('contextmenu', (e) => {
+  const row = e.target.closest('.msg')
+  if (!row || !row.dataset.id) return
+  e.preventDefault()
+  openMsgMenu(row, e.clientX, e.clientY)
+})
 
 $('edit-cancel').onclick = cancelEdit
 
@@ -1201,6 +1290,13 @@ async function sendFile(file) {
   client.sendFileOffer(peerId, meta)
   const total = Math.ceil(buf.length / CHUNK_BYTES) || 1
   for (let i = 0; i < total; i++) {
+    // Backpressure: don't outrun the socket's send buffer. Over TLS in a
+    // WebView, blasting all chunks synchronously overflows the buffer and
+    // frames get dropped (file never reassembles). Wait for it to drain.
+    let guard = 0
+    while (client.ws && client.ws.bufferedAmount > 256 * 1024 && guard++ < 500) {
+      await new Promise((r) => setTimeout(r, 20))
+    }
     const slice = buf.subarray(i * CHUNK_BYTES, (i + 1) * CHUNK_BYTES)
     const ok = client.sendFileChunk(peerId, fileId, i, slice)
     if (!ok) {

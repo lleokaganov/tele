@@ -31,6 +31,7 @@ export const FILE_CHUNK_CMD   = 0x25
 export const FILE_END_CMD     = 0x26
 export const MSG_DELETE_CMD   = 0x28
 export const MSG_EDIT_CMD     = 0x29
+export const READ_ACK_CMD     = 0x2A
 
 // Single, locally-operated STUN + TURN inside the project's infra.
 const TURN_SERVERS = [
@@ -323,6 +324,14 @@ export class CallManager {
       if (msg.body.length < 16) return
       const msgId = uuidFromBytes(msg.body.slice(0, 16))
       this.ui.onDelivered(peerId, msgId)
+      return
+    }
+
+    // Acknowledgement that the peer has read one of our out-messages.
+    if (cmd === READ_ACK_CMD) {
+      if (msg.body.length < 16) return
+      const msgId = uuidFromBytes(msg.body.slice(0, 16))
+      this.ui.onRead?.(peerId, msgId)
       return
     }
 

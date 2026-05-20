@@ -26,6 +26,7 @@
         }
         d.textContent += msg + '\n\n';
       }
+      window.__diag = showFatal;
       window.addEventListener('error', function (e) {
         showFatal('ERROR: ' + ((e.error && e.error.stack) || e.message || e));
       });
@@ -178,6 +179,9 @@
     <button id="lightbox-close" class="lightbox-close" title="close">✕</button>
     <img id="lightbox-img" alt="" />
   </div>
+
+  <!-- ============================== BUILD TAG ============================== -->
+  <div id="build-tag" style="position:fixed;bottom:2px;right:5px;z-index:60;font:10px/1 monospace;color:#667;pointer-events:none;opacity:.7">build __BUILD__</div>
 
   <!-- ============================== TOASTS ============================== -->
   <div id="toasts" class="toasts"></div>

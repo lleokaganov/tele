@@ -40,6 +40,7 @@ export const CMD = {
   FILE_END:        0x26,
   MSG_DELETE:      0x28,
   MSG_EDIT:        0x29,
+  READ_ACK:        0x2A,
   ERROR:           0xFF,
 }
 
@@ -213,6 +214,11 @@ export class WsClient {
   /** Acknowledge that we received a peer's text message. */
   sendDeliveryAck(peerId, msgIdUuid) {
     return this._sendPeer(peerId, CMD.DELIVERY_ACK, uuidToBytes(msgIdUuid))
+  }
+
+  /** Acknowledge that we've read (displayed in an open chat) a peer's message. */
+  sendReadAck(peerId, msgIdUuid) {
+    return this._sendPeer(peerId, CMD.READ_ACK, uuidToBytes(msgIdUuid))
   }
 
   /** Send the metadata that announces an upcoming file transfer.

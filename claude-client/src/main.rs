@@ -21,6 +21,7 @@
 //!   wschat keygen   print fresh seeds + your "K0..." invite, then exit
 //!   wschat          run the bridge
 
+use std::collections::HashMap;
 use std::env;
 use std::time::Duration;
 
@@ -43,6 +44,9 @@ const CMD_HANDSHAKE_REQUEST: u8 = 0x01;
 const CMD_HANDSHAKE_OK: u8 = 0x02;
 const CMD_TEXT: u8 = 0x20;
 const CMD_DELIVERY_ACK: u8 = 0x27;
+const CMD_READ_ACK: u8 = 0x2A;
+const CMD_SUBSCRIBE: u8 = 0x40;
+const CMD_PEER_ONLINE: u8 = 0x42;
 const CMD_INTRODUCE: u8 = 0x46;
 
 const DEFAULT_SERVER_X_PUB: &str =
@@ -195,6 +199,13 @@ struct Peer {
     nick: String,
 }
 
+/// An outgoing message in the local outbox. Kept until the peer's
+/// delivery-ack arrives; re-sent when the peer comes online.
+struct OutMsg {
+    text: String,
+    delivered: bool,
+}
+
 fn decode_qr(qr: &str) -> anyhow::Result<Peer> {
     let body = qr.strip_prefix(QR_PREFIX).ok_or_else(|| anyhow::anyhow!("bad QR prefix"))?;
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(body)?;
@@ -237,10 +248,20 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let me = Identity::from_seeds(
-        hex32(&env::var("WSCHAT_X_SEED").expect("WSCHAT_X_SEED (run `wschat keygen`)")),
-        hex32(&env::var("WSCHAT_ED_SEED").expect("WSCHAT_ED_SEED (run `wschat keygen`)")),
-    );
+    // Seeds are optional: if absent, generate a fresh per-session keypair.
+    // That gives each bridge session its own identity (so several can run in
+    // parallel as distinct contacts), named via WSCHAT_NICK.
+    let me = match (env::var("WSCHAT_X_SEED").ok(), env::var("WSCHAT_ED_SEED").ok()) {
+        (Some(x), Some(e)) => Identity::from_seeds(hex32(&x), hex32(&e)),
+        _ => {
+            let mut x = [0u8; 32];
+            let mut ed = [0u8; 32];
+            OsRng.fill_bytes(&mut x);
+            OsRng.fill_bytes(&mut ed);
+            eprintln!("[wschat] fresh session identity (no seeds in env)");
+            Identity::from_seeds(x, ed)
+        }
+    };
     let peer = decode_qr(&env::var("WSCHAT_PEER_QR").expect("WSCHAT_PEER_QR (recipient invite)"))?;
     let server_x_pub = hex32(&env_or("WSCHAT_SERVER_X_PUB", DEFAULT_SERVER_X_PUB));
     let server_ed_pub = hex32(&env_or("WSCHAT_SERVER_ED_PUB", DEFAULT_SERVER_ED_PUB));
@@ -251,116 +272,185 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("[wschat] me={} nick={} → peer={} ({})", hex::encode(me.id), nick, hex::encode(peer.id), peer.nick);
     eprintln!("[wschat] my invite: {}", make_qr(&me, &nick));
 
-    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await?;
-    ws.send(Message::Binary(build_handshake_request(&me, &server_x_pub))).await?;
-
     let shared_with_server = x25519(me.x_priv, server_x_pub);
     let (k_c2s, k_s2c) = derive_session(&shared_with_server);
 
-    // Handshake reply.
-    match ws.next().await {
-        Some(Ok(Message::Binary(b))) => {
-            let inner = decode_server_frame(&b, &k_s2c, &me.x_priv, &server_x_pub, &server_ed_vk)
-                .ok_or_else(|| anyhow::anyhow!("bad handshake reply"))?;
-            if inner.len() < 3 || inner[2] != CMD_HANDSHAKE_OK {
-                anyhow::bail!("handshake rejected: {:?}", inner);
-            }
-        }
-        other => anyhow::bail!("unexpected handshake reply: {other:?}"),
-    }
-    eprintln!("[wschat] connected. introducing self to peer…");
-
-    // Introduce ourselves so the peer gets our keys + nick as a contact.
-    let introduce = |seq: u16| -> Vec<u8> {
-        let mut body = Vec::with_capacity(8 + nick.len());
-        body.extend_from_slice(&peer.id);
-        body.extend_from_slice(nick.as_bytes());
-        build_server_bound(&me, &server_x_pub, &k_c2s, &pack_inner(seq, CMD_INTRODUCE, &body))
-    };
-    ws.send(Message::Binary(introduce(0))).await?;
-
+    // State persists across reconnects.
     let mut seq: u16 = 1;
+    let mut sent: HashMap<[u8; 16], OutMsg> = HashMap::new();
     let mut watch_offset: u64 = watch
         .as_ref()
         .and_then(|p| std::fs::metadata(p).ok())
         .map(|m| m.len())
         .unwrap_or(0); // only send lines appended after we start
-
     let mut stdin_lines = (watch.is_none()).then(|| BufReader::new(tokio::io::stdin()).lines());
-    let mut poll = tokio::time::interval(Duration::from_millis(500));
 
-    eprintln!("[wschat] ready. type/append lines to send; incoming prints below.");
-    loop {
-        tokio::select! {
-            msg = ws.next() => {
-                match msg {
-                    Some(Ok(Message::Binary(b))) => {
-                        handle_incoming(&b, &me, &peer, &k_s2c, &k_c2s, &mut ws, &mut seq).await;
-                    }
-                    Some(Ok(Message::Ping(p))) => { let _ = ws.send(Message::Pong(p)).await; }
-                    Some(Ok(Message::Close(_))) | None => { eprintln!("[wschat] connection closed"); break; }
-                    Some(Err(e)) => { eprintln!("[wschat] ws error: {e}"); break; }
-                    _ => {}
+    'reconnect: loop {
+        // (Re)connect + handshake. On any failure, wait and retry — the
+        // bridge must survive relay restarts / network blips, otherwise it
+        // silently dies and messages are lost.
+        let mut ws = match tokio_tungstenite::connect_async(&ws_url).await {
+            Ok((ws, _)) => ws,
+            Err(e) => {
+                eprintln!("[wschat] connect failed: {e}; retry in 5s");
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => continue 'reconnect,
+                    _ = tokio::signal::ctrl_c() => break 'reconnect,
                 }
             }
-            // stdin source
-            line = async { stdin_lines.as_mut().unwrap().next_line().await }, if stdin_lines.is_some() => {
-                match line {
-                    Ok(Some(text)) if !text.trim().is_empty() => {
-                        send_text(&text, &me, &peer, &k_c2s, &server_x_pub, &mut ws, &mut seq).await;
+        };
+        if ws.send(Message::Binary(build_handshake_request(&me, &server_x_pub))).await.is_err() {
+            eprintln!("[wschat] handshake send failed; retry in 5s");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            continue 'reconnect;
+        }
+        let ok = matches!(ws.next().await,
+            Some(Ok(Message::Binary(b)))
+                if decode_server_frame(&b, &k_s2c, &me.x_priv, &server_x_pub, &server_ed_vk)
+                    .map(|i| i.len() >= 3 && i[2] == CMD_HANDSHAKE_OK).unwrap_or(false));
+        if !ok {
+            eprintln!("[wschat] handshake failed; retry in 5s");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            continue 'reconnect;
+        }
+        eprintln!("[wschat] connected. introducing self to peer…");
+
+        // Introduce ourselves so the peer gets our keys + nick as a contact.
+        let mut intro_body = Vec::with_capacity(8 + nick.len());
+        intro_body.extend_from_slice(&peer.id);
+        intro_body.extend_from_slice(nick.as_bytes());
+        let _ = ws.send(Message::Binary(
+            build_server_bound(&me, &server_x_pub, &k_c2s, &pack_inner(seq, CMD_INTRODUCE, &intro_body))
+        )).await;
+        seq = seq.wrapping_add(1);
+
+        // Subscribe to the peer's presence so PEER_ONLINE wakes the outbox.
+        let _ = ws.send(Message::Binary(
+            build_server_bound(&me, &server_x_pub, &k_c2s, &pack_inner(seq, CMD_SUBSCRIBE, &peer.x_pub))
+        )).await;
+        seq = seq.wrapping_add(1);
+
+        // Peer may already be online — try to flush any pending outbox now.
+        flush_outbox(&me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent).await;
+
+        let mut poll = tokio::time::interval(Duration::from_millis(500));
+        eprintln!("[wschat] ready. type/append lines to send; incoming prints below.");
+
+        loop {
+            tokio::select! {
+                msg = ws.next() => {
+                    match msg {
+                        Some(Ok(Message::Binary(b))) => {
+                            handle_incoming(&b, &me, &peer, &nick, &k_s2c, &k_c2s, &server_x_pub, &server_ed_vk, &mut ws, &mut seq, &mut sent).await;
+                        }
+                        Some(Ok(Message::Ping(p))) => { let _ = ws.send(Message::Pong(p)).await; }
+                        Some(Ok(Message::Close(_))) | None => {
+                            eprintln!("[wschat] connection closed; reconnecting in 3s");
+                            break;
+                        }
+                        Some(Err(e)) => { eprintln!("[wschat] ws error: {e}; reconnecting in 3s"); break; }
+                        _ => {}
                     }
-                    Ok(Some(_)) => {}
-                    _ => { /* stdin closed; keep running for incoming */ stdin_lines = None; }
                 }
-            }
-            // watch-file source
-            _ = poll.tick(), if watch.is_some() => {
-                if let Some(path) = watch.as_ref() {
-                    for text in read_new_lines(path, &mut watch_offset) {
-                        if !text.trim().is_empty() {
-                            send_text(&text, &me, &peer, &k_c2s, &server_x_pub, &mut ws, &mut seq).await;
+                line = async { stdin_lines.as_mut().unwrap().next_line().await }, if stdin_lines.is_some() => {
+                    match line {
+                        Ok(Some(text)) if !text.trim().is_empty() => {
+                            send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent).await;
+                        }
+                        Ok(Some(_)) => {}
+                        _ => { stdin_lines = None; }
+                    }
+                }
+                _ = poll.tick(), if watch.is_some() => {
+                    if let Some(path) = watch.as_ref() {
+                        for text in read_new_lines(path, &mut watch_offset) {
+                            if !text.trim().is_empty() {
+                                send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent).await;
+                            }
                         }
                     }
                 }
+                _ = tokio::signal::ctrl_c() => { let _ = ws.close(None).await; break 'reconnect; }
             }
-            _ = tokio::signal::ctrl_c() => { eprintln!("[wschat] bye"); break; }
         }
+        let _ = ws.close(None).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
     }
-    let _ = ws.close(None).await;
     Ok(())
 }
 
 type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// Build a peer TEXT frame with an explicit message id (so the outbox can
+/// re-send the same id). Inner seq is irrelevant to the peer (it keys off
+/// the 16-byte id in the body).
+fn build_text_frame(me: &Identity, peer: &Peer, k_c2s: &[u8; 32], uuid: &[u8; 16], text: &str) -> Vec<u8> {
+    let mut body = Vec::with_capacity(16 + text.len());
+    body.extend_from_slice(uuid);
+    body.extend_from_slice(text.as_bytes());
+    build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s, &pack_inner(0, CMD_TEXT, &body))
+}
+
+/// Build an INTRODUCE that always carries our nickname, so the peer records
+/// us with a name (not "unnamed") whichever introduce reaches them first.
+fn build_introduce(me: &Identity, peer: &Peer, nick: &str, k_c2s: &[u8; 32], server_x_pub: &[u8; 32], seq: u16) -> Vec<u8> {
+    let mut body = Vec::with_capacity(8 + nick.len());
+    body.extend_from_slice(&peer.id);
+    body.extend_from_slice(nick.as_bytes());
+    build_server_bound(me, server_x_pub, k_c2s, &pack_inner(seq, CMD_INTRODUCE, &body))
+}
+
 async fn send_text(
     text: &str,
     me: &Identity,
     peer: &Peer,
+    nick: &str,
     k_c2s: &[u8; 32],
     server_x_pub: &[u8; 32],
     ws: &mut Ws,
     seq: &mut u16,
+    sent: &mut HashMap<[u8; 16], OutMsg>,
 ) {
-    // Re-introduce first so an offline-then-online peer still gets our keys.
-    let mut intro_body = Vec::with_capacity(8 + 8);
-    intro_body.extend_from_slice(&peer.id);
-    // (nick omitted on the re-introduce path — peer already has it or will
-    //  get it from the initial introduce; keep payload tiny.)
-    let intro = build_server_bound(me, server_x_pub, k_c2s, &pack_inner(*seq, CMD_INTRODUCE, &intro_body));
-    let _ = ws.send(Message::Binary(intro)).await;
+    // Re-introduce (with name) so an offline-then-online peer still gets our keys.
+    let _ = ws.send(Message::Binary(build_introduce(me, peer, nick, k_c2s, server_x_pub, *seq))).await;
     *seq = seq.wrapping_add(1);
 
-    // TEXT body = [msg_id:16][utf8].
     let mut uuid = [0u8; 16];
     OsRng.fill_bytes(&mut uuid);
-    let mut body = Vec::with_capacity(16 + text.len());
-    body.extend_from_slice(&uuid);
-    body.extend_from_slice(text.as_bytes());
-    let inner = pack_inner(*seq, CMD_TEXT, &body);
+    // Record in the outbox BEFORE sending — if the peer is offline the send
+    // still "succeeds" into the socket but no delivery-ack returns, so it
+    // stays pending and gets re-sent on PEER_ONLINE.
+    sent.insert(uuid, OutMsg { text: text.to_string(), delivered: false });
+    let frame = build_text_frame(me, peer, k_c2s, &uuid, text);
+    let _ = ws.send(Message::Binary(frame)).await;
+}
+
+/// Re-send every undelivered outbox message. Called on PEER_ONLINE and right
+/// after (re)connect.
+async fn flush_outbox(
+    me: &Identity,
+    peer: &Peer,
+    nick: &str,
+    k_c2s: &[u8; 32],
+    server_x_pub: &[u8; 32],
+    ws: &mut Ws,
+    seq: &mut u16,
+    sent: &mut HashMap<[u8; 16], OutMsg>,
+) {
+    let pending: Vec<([u8; 16], String)> = sent
+        .iter()
+        .filter(|(_, m)| !m.delivered)
+        .map(|(id, m)| (*id, m.text.clone()))
+        .collect();
+    if pending.is_empty() {
+        return;
+    }
+    eprintln!("[wschat] flushing {} pending message(s)", pending.len());
+    let _ = ws.send(Message::Binary(build_introduce(me, peer, nick, k_c2s, server_x_pub, *seq))).await;
     *seq = seq.wrapping_add(1);
-    let frame = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s, &inner);
-    if ws.send(Message::Binary(frame)).await.is_err() {
-        eprintln!("[wschat] send failed (peer offline?)");
+    for (uuid, text) in pending {
+        let frame = build_text_frame(me, peer, k_c2s, &uuid, &text);
+        let _ = ws.send(Message::Binary(frame)).await;
     }
 }
 
@@ -368,20 +458,34 @@ async fn handle_incoming(
     frame: &[u8],
     me: &Identity,
     peer: &Peer,
+    nick: &str,
     k_s2c: &[u8; 32],
     k_c2s: &[u8; 32],
+    server_x_pub: &[u8; 32],
+    server_ed_vk: &VerifyingKey,
     ws: &mut Ws,
     seq: &mut u16,
+    sent: &mut HashMap<[u8; 16], OutMsg>,
 ) {
+    use std::io::Write;
     if frame.len() < 8 + 24 + 16 + 64 {
         return;
     }
     let nonce_24: [u8; 24] = frame[8..32].try_into().unwrap();
     let mut header: [u8; 8] = frame[..8].try_into().unwrap();
     xor_header(k_s2c, &nonce_24, &mut header);
+
     if header == [0u8; 8] {
-        return; // server frame (INTRO_FROM, presence, error) — ignore for chat
+        // Server frame: we care about PEER_ONLINE to flush the outbox.
+        if let Some(inner) = decode_server_frame(frame, k_s2c, &me.x_priv, server_x_pub, server_ed_vk) {
+            if inner.len() >= 3 && inner[2] == CMD_PEER_ONLINE {
+                eprintln!("[wschat] peer online — flushing outbox");
+                flush_outbox(me, peer, nick, k_c2s, server_x_pub, ws, seq, sent).await;
+            }
+        }
+        return;
     }
+
     // Peer frame. We only know one peer.
     let Some(inner) = verify_and_decrypt(&frame[8..], &me.x_priv, &peer.x_pub, &peer.ed_pub) else {
         return;
@@ -391,17 +495,29 @@ async fn handle_incoming(
     }
     let cmd = inner[2];
     let body = &inner[3..];
+
     if cmd == CMD_TEXT && body.len() >= 16 {
         let text = String::from_utf8_lossy(&body[16..]).to_string();
-        // stdout is the bridge output — one line per message.
         println!("{}: {}", peer.nick, text);
-        use std::io::Write;
         let _ = std::io::stdout().flush();
-        // Acknowledge so the sender sees a delivered tick.
-        let ack = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
-            &pack_inner(*seq, CMD_DELIVERY_ACK, &body[..16]));
-        *seq = seq.wrapping_add(1);
-        let _ = ws.send(Message::Binary(ack)).await;
+        // Acknowledge delivery, then read (we display incoming immediately).
+        for ack_cmd in [CMD_DELIVERY_ACK, CMD_READ_ACK] {
+            let ack = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
+                &pack_inner(*seq, ack_cmd, &body[..16]));
+            *seq = seq.wrapping_add(1);
+            let _ = ws.send(Message::Binary(ack)).await;
+        }
+    } else if cmd == CMD_DELIVERY_ACK && body.len() >= 16 {
+        let id: [u8; 16] = body[..16].try_into().unwrap();
+        if let Some(m) = sent.get_mut(&id) { m.delivered = true; }
+        let p = sent.get(&id).map(|m| m.text.clone()).unwrap_or_default();
+        println!("  \u{2713} delivered: {p}");
+        let _ = std::io::stdout().flush();
+    } else if cmd == CMD_READ_ACK && body.len() >= 16 {
+        let id: [u8; 16] = body[..16].try_into().unwrap();
+        let p = sent.get(&id).map(|m| m.text.clone()).unwrap_or_default();
+        println!("  \u{2713}\u{2713} read: {p}");
+        let _ = std::io::stdout().flush();
     }
 }
 
