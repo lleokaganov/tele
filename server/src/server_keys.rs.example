@@ -1,0 +1,77 @@
+//! Server long-term keypairs. Hard-coded constants — clients embed the
+//! public halves verbatim and use them to encrypt handshake frames and to
+//! verify signatures on server-originated messages.
+//!
+//! Placeholder keys. Generate your own deployment keypair and save as
+//! server_keys.rs (gitignored). See README.
+//!
+//! Once generated, these keys are permanent for the deployment: rotating
+//! them would invalidate every installed client (clients pin the public
+//! halves), so generate once and keep them.
+
+use ed25519_dalek::{SigningKey, VerifyingKey};
+use x25519_dalek::{PublicKey, StaticSecret};
+
+pub const X25519_SECRET: [u8; 32] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
+pub const X25519_PUBLIC: [u8; 32] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
+pub const ED25519_SECRET: [u8; 32] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
+pub const ED25519_PUBLIC: [u8; 32] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
+/// ClientId of the push-notifier peer. WAKE / PUSH_REGISTER commands are
+/// forwarded to whichever connected session has this id. The notifier holds
+/// the matching keypair; the server only needs its id to route there.
+///
+/// Placeholder — take the real value from the output of `notifier keygen`
+/// (the `pub const NOTIFIER_ID: [u8; 8] = [...]` line it prints).
+pub const NOTIFIER_ID: [u8; 8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+#[allow(dead_code)]
+pub fn x25519_secret() -> StaticSecret {
+    StaticSecret::from(X25519_SECRET)
+}
+
+#[allow(dead_code)]
+pub fn x25519_public() -> PublicKey {
+    PublicKey::from(X25519_PUBLIC)
+}
+
+pub fn ed25519_signing() -> SigningKey {
+    SigningKey::from_bytes(&ED25519_SECRET)
+}
+
+#[allow(dead_code)]
+pub fn ed25519_verifying() -> VerifyingKey {
+    VerifyingKey::from_bytes(&ED25519_PUBLIC).expect("ED25519_PUBLIC is a valid point")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn x25519_secret_matches_public() {
+        let derived = PublicKey::from(&x25519_secret());
+        assert_eq!(derived.as_bytes(), &X25519_PUBLIC);
+    }
+
+    #[test]
+    fn ed25519_secret_matches_public() {
+        let derived = ed25519_signing().verifying_key();
+        assert_eq!(derived.as_bytes(), &ED25519_PUBLIC);
+    }
+}

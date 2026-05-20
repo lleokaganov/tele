@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ws_wasm demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 1rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.2rem; }
+    .row { display: flex; gap: .5rem; align-items: center; margin: .5rem 0; }
+    input, textarea, select { font: inherit; padding: .25rem .5rem; }
+    button { font: inherit; padding: .3rem .8rem; cursor: pointer; }
+    #qr { font-family: monospace; font-size: .8rem; word-break: break-all; background: #f4f4f4; padding: .5rem; border-radius: 4px; }
+    #console { font-family: monospace; font-size: .85rem; background: #111; color: #ddd; height: 240px; overflow-y: auto; padding: .5rem; border-radius: 4px; white-space: pre-wrap; }
+    .led { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #c22; }
+    .led.ok { background: #2c2; }
+    .led.warn { background: #c80; }
+    code { background: #f4f4f4; padding: 0 .2rem; }
+  </style>
+</head>
+<body>
+  <h1>ws_wasm demo — protocol v2</h1>
+
+  <div class="row">
+    <span id="led" class="led"></span>
+    <span id="state">disconnected</span>
+    <span style="flex:1"></span>
+    <button id="btn-connect">Connect</button>
+    <button id="btn-disconnect">Disconnect</button>
+  </div>
+
+  <div class="row">
+    <strong>my id:</strong> <code id="my-id">—</code>
+  </div>
+  <div class="row">
+    <strong>my QR text:</strong> <span id="qr">—</span>
+  </div>
+
+  <h3>Peer book</h3>
+  <div class="row">
+    <input id="qr-input" type="text" placeholder='paste peer "K0..." QR text' style="flex:1" />
+    <button id="btn-add-peer">Add peer</button>
+  </div>
+  <div class="row">
+    <label for="peer-select">peer:</label>
+    <select id="peer-select" style="flex:1"><option value="">— none —</option></select>
+    <button id="btn-remove-peer">Remove</button>
+    <button id="btn-subscribe">Subscribe presence</button>
+  </div>
+
+  <h3>Send</h3>
+  <div class="row">
+    <input id="text-input" type="text" placeholder="text message" style="flex:1" />
+    <button id="btn-send-text">Send text</button>
+  </div>
+  <div class="row">
+    <button id="btn-sound-1">Sound 1</button>
+    <button id="btn-sound-2">Sound 2</button>
+    <button id="btn-sound-3">Sound 3</button>
+    <button id="btn-sound-stop-all">STOP ALL</button>
+  </div>
+
+  <h3>Console</h3>
+  <div id="console"></div>
+
+  <script type="module">
+    import { WsClient, CMD, u8hex } from './ws_client.js'
+
+    const $ = (id) => document.getElementById(id)
+    const consoleBox = $('console')
+    const peerSelect = $('peer-select')
+
+    function log(s) {
+      const ts = new Date().toTimeString().slice(0, 8)
+      consoleBox.textContent = `${ts}  ${s}\n` + consoleBox.textContent
+    }
+
+    const client = new WsClient()
+    await client.init()
+
+    $('my-id').textContent = u8hex(client.myId)
+    $('qr').textContent = client.myQrText
+
+    client.onConsole = log
+    client.onState = ({ state }) => {
+      $('state').textContent = state
+      const led = $('led')
+      led.className = 'led ' + (state === 'established' ? 'ok'
+        : state === 'closed' || state === 'reconnect-in' ? '' : 'warn')
+    }
+    client.onPeer = (msg) => {
+      const idHex = u8hex(msg.from_id)
+      if (msg.cmd === CMD.TEXT) {
+        log(`← ${idHex.slice(0,8)} TEXT: ${new TextDecoder().decode(msg.body)}`)
+      } else if (msg.cmd === CMD.SOUND_START) {
+        log(`← ${idHex.slice(0,8)} SOUND_START ${msg.body[0]}`)
+      } else if (msg.cmd === CMD.SOUND_STOP) {
+        log(`← ${idHex.slice(0,8)} SOUND_STOP ${msg.body[0]}`)
+      } else if (msg.cmd === CMD.SOUND_STOP_ALL) {
+        log(`← ${idHex.slice(0,8)} SOUND_STOP_ALL`)
+      } else {
+        log(`← ${idHex.slice(0,8)} cmd=0x${msg.cmd.toString(16)} body[${msg.body.length}]`)
+      }
+    }
+    client.onServer = (msg) => {
+      if (msg.cmd === CMD.PEER_ONLINE) {
+        const count = msg.body.length / 32
+        log(`← server PEER_ONLINE × ${count}`)
+      } else if (msg.cmd === CMD.PEER_OFFLINE) {
+        const count = msg.body.length / 32
+        log(`← server PEER_OFFLINE × ${count}`)
+      } else if (msg.cmd === CMD.ERROR) {
+        log(`× server ERROR code=${msg.body[0]}`)
+      }
+    }
+
+    function refreshPeerList() {
+      // The session doesn't expose a peer list — track a shadow set in JS.
+      peerSelect.innerHTML = '<option value="">— none —</option>'
+      for (const [id, xPub] of peerBook) {
+        const opt = document.createElement('option')
+        opt.value = id
+        opt.textContent = id
+        peerSelect.appendChild(opt)
+      }
+    }
+
+    const peerBook = new Map() // idHex -> xPub (Uint8Array)
+
+    $('btn-connect').onclick = () => client.connect()
+    $('btn-disconnect').onclick = () => client.close()
+
+    $('btn-add-peer').onclick = () => {
+      const text = $('qr-input').value.trim()
+      if (!text) return
+      try {
+        const id = client.addPeerFromQr(text)
+        const idHex = u8hex(id)
+        // Decode the QR text again here to keep a copy of the X_pub for
+        // subscribe convenience. addPeerFromQr already stored it inside WASM.
+        const body = text.slice(2)
+        const decoded = atob(body.replace(/-/g, '+').replace(/_/g, '/'))
+        const xPub = new Uint8Array(32)
+        for (let i = 0; i < 32; i++) xPub[i] = decoded.charCodeAt(i)
+        peerBook.set(idHex, xPub)
+        refreshPeerList()
+        peerSelect.value = idHex
+        $('qr-input').value = ''
+        log(`+ added peer ${idHex}`)
+      } catch (e) {
+        log(`x add peer failed: ${e}`)
+      }
+    }
+
+    $('btn-remove-peer').onclick = () => {
+      const idHex = peerSelect.value
+      if (!idHex) return
+      const id = new Uint8Array(idHex.match(/.{1,2}/g).map(b => parseInt(b, 16)))
+      client.removePeer(id)
+      peerBook.delete(idHex)
+      refreshPeerList()
+      log(`- removed peer ${idHex}`)
+    }
+
+    $('btn-subscribe').onclick = () => {
+      const xs = [...peerBook.values()]
+      if (xs.length === 0) { log('no peers to subscribe to'); return }
+      const ok = client.subscribe(xs)
+      log(ok ? `→ subscribed to ${xs.length} peer(s)` : 'x subscribe: not connected')
+    }
+
+    function currentPeerId() {
+      const hex = peerSelect.value
+      if (!hex) { log('x no peer selected'); return null }
+      return new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)))
+    }
+
+    $('btn-send-text').onclick = () => {
+      const peerId = currentPeerId(); if (!peerId) return
+      const text = $('text-input').value
+      if (!text) return
+      client.sendText(peerId, text)
+      log(`→ ${peerSelect.value.slice(0,8)} TEXT: ${text}`)
+      $('text-input').value = ''
+    }
+    $('btn-sound-1').onclick = () => { const p = currentPeerId(); if (p) { client.sendSoundStart(p, 1); log(`→ SOUND_START 1`) } }
+    $('btn-sound-2').onclick = () => { const p = currentPeerId(); if (p) { client.sendSoundStart(p, 2); log(`→ SOUND_START 2`) } }
+    $('btn-sound-3').onclick = () => { const p = currentPeerId(); if (p) { client.sendSoundStart(p, 3); log(`→ SOUND_START 3`) } }
+    $('btn-sound-stop-all').onclick = () => { const p = currentPeerId(); if (p) { client.sendSoundStopAll(p); log(`→ SOUND_STOP_ALL`) } }
+  </script>
+</body>
+</html>

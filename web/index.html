@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#1a1d22" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="telefon" />
+  <title>telefon.lleo.me</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <link rel="stylesheet" href="style.css" />
+  <script>
+    // Visible crash overlay — surfaces startup errors that are otherwise
+    // invisible inside the Capacitor WebView. Silent when nothing throws.
+    (function () {
+      function showFatal(msg) {
+        var d = document.getElementById('__fatal');
+        if (!d) {
+          d = document.createElement('div');
+          d.id = '__fatal';
+          d.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#400;color:#fff;font:12px/1.4 monospace;padding:1em;overflow:auto;white-space:pre-wrap';
+          (document.body || document.documentElement).appendChild(d);
+        }
+        d.textContent += msg + '\n\n';
+      }
+      window.addEventListener('error', function (e) {
+        showFatal('ERROR: ' + ((e.error && e.error.stack) || e.message || e));
+      });
+      window.addEventListener('unhandledrejection', function (e) {
+        var r = e.reason;
+        showFatal('PROMISE: ' + ((r && r.stack) || (r && r.message) || r));
+      });
+    })();
+  </script>
+</head>
+<body>
+
+  <!-- ============================== SCREEN: contacts ============================== -->
+  <section id="screen-contacts" class="screen active">
+    <header class="topbar">
+      <span id="conn-led" class="dot dot-off"></span>
+      <div class="title">
+        <span id="my-nickname">…</span>
+        <span class="muted" id="conn-text">connecting…</span>
+      </div>
+      <button id="btn-settings" class="iconbtn" title="settings">⚙</button>
+    </header>
+
+    <div id="fatal-banner" class="fatal" hidden></div>
+
+    <ul id="contacts" class="contacts"></ul>
+
+    <div id="contacts-empty" class="empty" hidden>
+      No contacts yet. Share your invite link below, or hit "+ Add contact" if a friend gave you their code.
+    </div>
+
+    <div class="bottombar">
+      <button id="btn-add-contact" class="primary">+ Add contact</button>
+      <button id="btn-share-invite" class="secondary">Share invite</button>
+      <button id="btn-install" class="secondary">📲 Install</button>
+    </div>
+  </section>
+
+  <!-- ============================== SCREEN: call / chat ============================== -->
+  <section id="screen-call" class="screen">
+    <header class="topbar">
+      <button id="btn-back" class="iconbtn" title="back">←</button>
+      <div class="title">
+        <span id="call-peer-name">—</span>
+        <span id="call-peer-online" class="dot dot-off"></span>
+      </div>
+      <span class="muted" id="call-state">idle</span>
+      <button id="btn-clear-history" class="iconbtn" title="clear history">🗑</button>
+    </header>
+
+    <div class="video-stage">
+      <video id="peer-video" class="peer-video" autoplay        playsinline></video>
+      <video id="my-video"   class="my-video"   autoplay muted   playsinline></video>
+      <div id="stats-overlay" class="stats-overlay" hidden></div>
+      <button id="stats-toggle" class="stats-toggle" title="connection stats">ⓘ</button>
+    </div>
+
+    <div class="controls">
+      <button id="call-btn"   class="primary">📞 Call</button>
+      <button id="hangup-btn" class="danger" hidden>Hang up</button>
+      <button id="switch-cam" class="secondary" hidden>↻ Camera</button>
+      <button id="mute-btn"   class="secondary" hidden>🔇 Mic</button>
+      <button id="video-btn"  class="secondary" hidden>🎥 Video</button>
+      <button id="speaker-btn" class="secondary" hidden>🔊</button>
+      <select id="res-select" class="resolution-select" hidden>
+        <option value="240">240p</option>
+        <option value="360">360p</option>
+        <option value="480" selected>480p</option>
+        <option value="720">720p</option>
+      </select>
+    </div>
+
+    <div class="chat-wrap">
+      <div id="chat"></div>
+      <div id="edit-banner" class="edit-banner" hidden>
+        <span>✏️ Editing message</span>
+        <button id="edit-cancel" class="iconbtn" title="cancel edit">✕</button>
+      </div>
+      <div class="chat-input">
+        <input id="file-input" type="file" hidden multiple />
+        <button id="attach-btn" class="secondary" title="Attach file">📎</button>
+        <input id="text-input" type="text" placeholder="message" />
+        <button id="send-text" class="primary">→</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== DIALOG: first-run nickname ============================== -->
+  <div id="dialog-nickname" class="dialog" hidden>
+    <div class="dialog-box">
+      <div class="dialog-title">What's your name?</div>
+      <div class="dialog-text">This is the name people you invite will see. Without it, they won't know who sent them the keys.</div>
+      <input id="nick-input" type="text" placeholder="e.g. Pat" autofocus />
+      <div class="dialog-buttons">
+        <button id="nick-save" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================== DIALOG: add contact ============================== -->
+  <div id="dialog-add" class="dialog" hidden>
+    <div class="dialog-box">
+      <div class="dialog-title">New contact</div>
+      <label>Invite link or K0… code</label>
+      <input id="add-qr" type="text" placeholder="https://tele.lleo.me/?peer=K0… or just K0…" />
+      <label>Name</label>
+      <input id="add-label" type="text" placeholder="e.g. Lena" />
+      <div class="dialog-error" id="add-error" hidden></div>
+      <div class="dialog-buttons">
+        <button id="add-cancel" class="secondary">Cancel</button>
+        <button id="add-save"   class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================== DIALOG: incoming call ============================== -->
+  <div id="dialog-incoming" class="dialog" hidden>
+    <div class="dialog-box">
+      <div class="dialog-title">📞 Incoming call</div>
+      <div id="incoming-name" class="dialog-text">—</div>
+      <div class="dialog-buttons">
+        <button id="incoming-reject" class="danger">Decline</button>
+        <button id="incoming-accept" class="primary">Accept</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================== DIALOG: settings ============================== -->
+  <div id="dialog-settings" class="dialog" hidden>
+    <div class="dialog-box">
+      <div class="dialog-title">Settings</div>
+      <label>My invite link (share with a friend)</label>
+      <input id="my-invite" type="text" readonly />
+      <div class="dialog-buttons" style="justify-content:flex-start;flex-wrap:wrap">
+        <button id="copy-invite" class="secondary">Copy</button>
+        <button id="export-book" class="secondary">Export contacts</button>
+        <button id="import-book" class="secondary">Import contacts</button>
+        <input id="import-file" type="file" accept="text/plain,.txt" hidden />
+      </div>
+      <div class="dialog-text muted" id="my-id-line">id: —</div>
+      <div class="dialog-buttons">
+        <button id="wipe-id"        class="danger">Wipe my identity</button>
+        <button id="settings-close" class="primary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================== LIGHTBOX (full-screen image) ============================== -->
+  <div id="lightbox" class="lightbox" hidden>
+    <button id="lightbox-close" class="lightbox-close" title="close">✕</button>
+    <img id="lightbox-img" alt="" />
+  </div>
+
+  <!-- ============================== TOASTS ============================== -->
+  <div id="toasts" class="toasts"></div>
+
+  <script src="./DB.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

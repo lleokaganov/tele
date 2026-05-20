@@ -1,0 +1,17 @@
+{
+  "name": "app",
+  "version": "1.0.0",
+  "description": "WebRTC-based voice/video phone, signalling over the ws.lleo.me v2 protocol. End-to-end encrypted: signalling is AEAD'd by the WS layer, media is SRTP+DTLS, fingerprint exchange runs through the encrypted signal channel — relay/TURN sees only ciphertext.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@capacitor/android": "^8.3.4",
+    "@capacitor/cli": "^8.3.4",
+    "@capacitor/core": "^8.3.4"
+  }
+}

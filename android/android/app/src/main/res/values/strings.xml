@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">telefon</string>
+    <string name="title_activity_main">telefon</string>
+    <string name="package_name">me.lleo.telefon</string>
+    <string name="custom_url_scheme">me.lleo.telefon</string>
+</resources>
