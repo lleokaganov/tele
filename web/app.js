@@ -27,7 +27,7 @@ const $ = (id) => document.getElementById(id)
 // must hit the real server. In the browser PWA, same-origin (empty base).
 const API_BASE = (window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function'
   && window.Capacitor.isNativePlatform())
-  ? 'https://telefon.lleo.me'
+  ? 'https://tele.karlson.ru'
   : ''
 
 /* =================================== toasts =================================== */
@@ -100,10 +100,10 @@ async function askNicknameIfMissing() {
 askNicknameIfMissing()
 document.getElementById('my-nickname').textContent = nickname || '?'
 
-// Default relay (telefon.lleo.me) — shown in settings; overridable so anyone
-// can point the app at their own self-hosted server.
+// Default relay (public: tele.karlson.ru) — shown in settings; overridable
+// so anyone can point the app at their own self-hosted server.
 const SRV_DEFAULTS = {
-  url: 'wss://telefon.lleo.me/ws',
+  url: 'wss://tele.karlson.ru/ws',
   xpub: '4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06',
   edpub: 'b835840fd3aba7cc4519513f3bbcb1c35170f6aa97d97c16eabdb2e36710d003',
 }
@@ -978,6 +978,13 @@ if (NATIVE_APP) {
   $('btn-install').textContent = '⬆ Обновить'
 } else if (matchMedia('(display-mode: standalone)').matches) {
   $('btn-install').hidden = true  // installed PWA — nothing to install
+}
+// In a mobile browser (not the native app), offer the APK download.
+if (!NATIVE_APP && /Android/.test(navigator.userAgent)) {
+  $('btn-apk').hidden = false
+}
+$('btn-apk').onclick = () => {
+  window.open('https://tele.karlson.ru/apk/telefon-latest.apk', '_blank')
 }
 
 async function checkAndUpdate() {

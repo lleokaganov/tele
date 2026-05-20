@@ -15,7 +15,7 @@ export function buildInviteUrl(qrText) {
   // public site instead. In the browser PWA, use the current origin.
   const native = window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function'
     && window.Capacitor.isNativePlatform()
-  const u = new URL(native ? 'https://telefon.lleo.me/' : window.location.href)
+  const u = new URL(native ? 'https://tele.karlson.ru/' : window.location.href)
   u.search = ''
   u.hash = ''
   u.searchParams.set(PARAM, qrText)

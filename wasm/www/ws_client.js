@@ -13,7 +13,7 @@ import init, { WsSession } from './ws_wasm.js'
 const NATIVE = typeof window !== 'undefined'
   && window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function'
   && window.Capacitor.isNativePlatform()
-const NATIVE_HOST = 'telefon.lleo.me'
+const NATIVE_HOST = 'tele.karlson.ru'
 const DEFAULT_URL = NATIVE
   ? `wss://${NATIVE_HOST}/ws`
   : (typeof location !== 'undefined'
