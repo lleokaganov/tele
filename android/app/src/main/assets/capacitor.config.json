@@ -1,0 +1,10 @@
+{
+	"appId": "me.lleo.telefon",
+	"appName": "telefon",
+	"webDir": "www",
+	"plugins": {
+		"CapacitorHttp": {
+			"enabled": true
+		}
+	}
+}
