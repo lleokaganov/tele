@@ -30,13 +30,16 @@ button.secondary:hover { background: #4a4f55 }
 button.danger    { background: #b03030; color: white }
 button.iconbtn   { background: transparent; padding: .3rem .55rem; font-size: 1.25rem }
 
-input[type=text] {
+input[type=text], textarea#text-input {
   font: inherit; padding: .55rem .7rem;
   background: #1a1d22; color: #e8eaed;
   border: 1px solid #3a3f45; border-radius: 8px;
   width: 100%;
 }
-input[type=text]:focus { outline: none; border-color: #4685c7 }
+input[type=text]:focus, textarea#text-input:focus { outline: none; border-color: #4685c7 }
+/* Auto-growing composer: JS sets height to fit content up to max-height, then
+ * the textarea scrolls internally. resize:none hides the manual drag handle. */
+textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-height: 1.3; }
 
 /* ============================== screens ============================== */
 
@@ -101,6 +104,16 @@ input[type=text]:focus { outline: none; border-color: #4685c7 }
 .dot-off  { background: #555 }
 .dot-warn { background: #c93; box-shadow: 0 0 5px #c93 }
 
+/* Unread-message count, shown just before the online dot in the list. */
+.contact .unread-badge {
+  flex: 0 0 auto;
+  min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 9px;
+  background: #3a6ea5; color: #fff;
+  font-size: .72rem; font-weight: 700; line-height: 18px;
+  text-align: center;
+}
+
 .empty {
   padding: 2rem 1rem; color: #8a8f95; font-size: .9rem; text-align: center;
 }
@@ -132,6 +145,10 @@ input[type=text]:focus { outline: none; border-color: #4685c7 }
   object-fit: cover; background: #111;
   z-index: 2;
 }
+/* Draggable PiP: touch-action:none stops the browser from scrolling the
+ * page while the finger drags the mini-preview. */
+#my-video { touch-action: none; cursor: grab; }
+#my-video.dragging { cursor: grabbing; }
 .stats-toggle {
   position: absolute; top: 12px; right: 12px; z-index: 3;
   width: 32px; height: 32px; padding: 0;
@@ -185,14 +202,22 @@ input[type=text]:focus { outline: none; border-color: #4685c7 }
 .msg-status {
   font-size: .7rem; color: rgba(255,255,255,.6);
   flex: 0 0 auto;
+  -webkit-user-select: none; user-select: none;   /* don't grab ticks when selecting text */
 }
 .msg { cursor: default; }
 .msg.editing { outline: 2px solid #c93; outline-offset: 1px; }
-.msg-edited { font-size: .7rem; color: rgba(255,255,255,.45); }
+.msg-edited {
+  font-size: .7rem; color: rgba(255,255,255,.45);
+  -webkit-user-select: none; user-select: none;   /* time/edited mark not part of the text */
+}
 
 /* The text must stay user-selectable (WebView often disables selection
  * globally) so links can be selected/copied natively. */
-.msg-text { -webkit-user-select: text; user-select: text; }
+.msg-text {
+  -webkit-user-select: text; user-select: text;
+  white-space: pre-wrap;        /* render embedded newlines + wrap long lines */
+  overflow-wrap: anywhere;      /* break very long words/URLs instead of overflowing */
+}
 
 /* Per-message actions handle (⋮). */
 .msg-actions {
@@ -208,6 +233,28 @@ input[type=text]:focus { outline: none; border-color: #4685c7 }
   gap: .5rem; padding: .35rem .75rem;
   background: #2c2a1c; color: #e8d8a0;
   border-top: 1px solid #4a4630; font-size: .85rem;
+}
+
+/* Search-over-history bar, shown above the chat while in search mode. */
+.search-bar {
+  display: flex; align-items: center; gap: .5rem;
+  padding: .35rem .75rem;
+  background: #20242b;
+  border-bottom: 1px solid #2f343a;
+}
+.search-bar #search-input {
+  flex: 1; min-width: 0;
+  background: #15181d; color: #e6e8ea;
+  border: 1px solid #2f343a; border-radius: 8px;
+  padding: .35rem .55rem; font-size: .9rem;
+}
+.search-bar #search-input:focus { outline: none; border-color: #3a6ea5; }
+.search-info { color: #8a8f95; font-size: .8rem; flex: 0 0 auto; }
+
+/* Search-result highlight inside a message bubble. */
+.msg-text mark {
+  background: #d8a000; color: #1a1d22;
+  border-radius: 3px; padding: 0 1px;
 }
 
 .msg-menu {
@@ -230,7 +277,11 @@ input[type=text]:focus { outline: none; border-color: #4685c7 }
   padding-bottom: calc(.5rem + env(safe-area-inset-bottom));
   border-top: 1px solid #2f343a; align-items: center;
 }
-.chat-input input[type=text] { flex: 1 }
+.chat-input #text-input {
+  flex: 1; resize: none;
+  line-height: 1.3; max-height: 120px;
+  overflow-y: auto;
+}
 .chat-input button { flex: 0 0 auto }
 #attach-btn { padding: .55rem .8rem }
 
@@ -249,9 +300,12 @@ input[type=text]:focus { outline: none; border-color: #4685c7 }
   font-size: .75rem; opacity: .8;
   display: flex; align-items: center; gap: .35rem;
 }
-.msg-file .filemeta a {
+.msg-file .filemeta a,
+.msg-file .filemeta .filelink {
   color: inherit; text-decoration: underline;
 }
+/* Native-shell file row: a tappable span (no <a download>) opening the chooser. */
+.msg-file .filemeta .filelink { cursor: pointer; }
 
 .msg-link { color: #9cc4ff; text-decoration: underline; word-break: break-all; }
 
@@ -322,8 +376,13 @@ input[type=text]:focus { outline: none; border-color: #4685c7 }
 }
 
 .toasts {
-  position: fixed; bottom: 1rem; right: 1rem; z-index: 20;
-  display: flex; flex-direction: column; gap: .5rem;
+  /* Top of the screen (under the status bar) so toasts never cover the
+   * bottom action buttons (e.g. "Update"). Container ignores pointer
+   * events; individual toasts re-enable them to stay tap-to-dismiss. */
+  position: fixed; z-index: 70;
+  top: calc(.6rem + env(safe-area-inset-top)); left: 1rem; right: 1rem;
+  display: flex; flex-direction: column; gap: .5rem; align-items: center;
+  pointer-events: none;
 }
 .toast {
   background: #2f343a; color: #e8eaed;

@@ -74,6 +74,40 @@ export const Storage = {
     return rows
   },
 
+  /** Return the most recent `limit` messages with a peer, oldest first.
+   *  Backs the windowed chat view so opening a long conversation only
+   *  renders a tail instead of the whole thing. Fetch-all + slice is fine
+   *  at our scale (a phone-to-phone chat, not a public channel). */
+  async historyTail(peerId, limit) {
+    const rows = await this.history(peerId)
+    return limit && rows.length > limit ? rows.slice(-limit) : rows
+  },
+
+  /** Return up to `limit` messages at-or-older-than `beforeTs`, the newest of
+   *  that set, oldest first. Used to lazy-load upward as the user scrolls
+   *  toward the top of the chat. The bound is inclusive (<=) so messages
+   *  sharing the boundary timestamp are never skipped; the caller dedupes by
+   *  id against what's already on screen to avoid re-rendering the boundary
+   *  row. */
+  async historyBefore(peerId, beforeTs, limit) {
+    const rows = await DB.get(DB_NAME, 'messages',
+      (m) => m.peer_id === peerId && m.ts <= beforeTs)
+    rows.sort((a, b) => a.ts - b.ts)
+    return limit && rows.length > limit ? rows.slice(-limit) : rows
+  },
+
+  /** Full-text search over a peer's conversation. Matches text bodies that
+   *  contain `query` (case-insensitive). File references (bodies starting
+   *  with '%') are skipped — their body is an opaque id, not searchable
+   *  text. Oldest first. */
+  async search(peerId, query) {
+    const q = (query || '').trim().toLowerCase()
+    if (!q) return []
+    const rows = await this.history(peerId)
+    return rows.filter((m) =>
+      !isFileRef(m.body) && m.body.toLowerCase().includes(q))
+  },
+
   /** Outbox entries that target a particular peer. Joins with messages
    *  on id so the caller gets the full payload back. */
   async pendingFor(peerId) {

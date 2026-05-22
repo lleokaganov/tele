@@ -36,6 +36,10 @@ use rand::RngCore;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::Message;
+use web_push::{
+    ContentEncoding, IsahcWebPushClient, SubscriptionInfo, VapidSignatureBuilder,
+    WebPushClient, WebPushMessageBuilder,
+};
 use x25519_dalek::x25519;
 
 const PROTOCOL_VERSION: u8 = 2;
@@ -249,16 +253,196 @@ impl Registry {
 
 // ============================== push sender ==============================
 
-trait PushSender: Send + Sync {
-    fn send(&self, id: &[u8; 8], token: &str);
+/// Web Push (RFC 8291) sender. The registered token is a browser
+/// PushSubscription serialized as JSON (`{endpoint, keys:{p256dh, auth}}`),
+/// which deserializes straight into `SubscriptionInfo`. Payload is a tiny
+/// generic notification — we never leak who is calling/writing, only that
+/// something happened, so the user opens the app.
+#[derive(Clone)]
+struct WebPushSender {
+    vapid_private: String, // base64url-encoded VAPID private key
+    subject: String,       // VAPID "sub" claim, e.g. mailto:...
 }
 
-/// Placeholder sender: logs what it would push. Real FCM sender plugs in
-/// here once a Firebase project + service-account key exist.
-struct StubSender;
-impl PushSender for StubSender {
+impl WebPushSender {
+    /// Fire-and-forget: spawn the async HTTP send so handle_frame stays sync.
     fn send(&self, id: &[u8; 8], token: &str) {
-        tracing::info!("PUSH (stub) → {} token={}…", hex::encode(id), &token[..token.len().min(16)]);
+        let vapid_private = self.vapid_private.clone();
+        let subject = self.subject.clone();
+        let id = *id;
+        let token = token.to_string();
+        tokio::spawn(async move {
+            match Self::do_send(&vapid_private, &subject, &token).await {
+                Ok(()) => tracing::info!("web push → {} ok", hex::encode(id)),
+                Err(e) => tracing::warn!("web push → {} failed: {e}", hex::encode(id)),
+            }
+        });
+    }
+
+    async fn do_send(vapid_private: &str, subject: &str, token: &str) -> anyhow::Result<()> {
+        let sub: SubscriptionInfo = serde_json::from_str(token)?;
+        let mut sig =
+            VapidSignatureBuilder::from_base64(vapid_private, base64::URL_SAFE_NO_PAD, &sub)?;
+        sig.add_claim("sub", subject.to_string());
+        let signature = sig.build()?;
+        let mut builder = WebPushMessageBuilder::new(&sub);
+        let payload = br#"{"title":"telefon","body":"New message or incoming call"}"#;
+        builder.set_payload(ContentEncoding::Aes128Gcm, payload);
+        builder.set_vapid_signature(signature);
+        let message = builder.build()?;
+        let client = IsahcWebPushClient::new()?;
+        client.send(message).await?;
+        Ok(())
+    }
+}
+
+/// FCM (HTTP v1) sender for the native Android app. The registered token is
+/// a plain FCM registration token. Auth is OAuth2 via the project's
+/// service-account; payload is the same generic notice as Web Push.
+#[derive(Clone)]
+struct FcmSender {
+    project_id: String,
+    sa: std::sync::Arc<gcp_auth::CustomServiceAccount>,
+    http: reqwest::Client,
+}
+
+impl FcmSender {
+    fn send(&self, id: &[u8; 8], token: &str, is_call: bool) {
+        let me = self.clone();
+        let id = *id;
+        let token = token.to_string();
+        let kind = if is_call { "call" } else { "msg" };
+        tokio::spawn(async move {
+            match me.do_send(&token, is_call).await {
+                Ok(()) => tracing::info!("fcm → {} ({kind}) ok", hex::encode(id)),
+                Err(e) => tracing::warn!("fcm → {} ({kind}) failed: {e}", hex::encode(id)),
+            }
+        });
+    }
+
+    async fn do_send(&self, token: &str, is_call: bool) -> anyhow::Result<()> {
+        use gcp_auth::TokenProvider;
+        let at = self
+            .sa
+            .token(&["https://www.googleapis.com/auth/firebase.messaging"])
+            .await?;
+        let url = format!(
+            "https://fcm.googleapis.com/v1/projects/{}/messages:send",
+            self.project_id
+        );
+        // Calls go as a DATA-only message so the native handler can raise a
+        // CallStyle notification with a looping ringtone. Messages go as a
+        // normal notification (single sound) shown by the system itself.
+        let body = if is_call {
+            serde_json::json!({
+                "message": {
+                    "token": token,
+                    "data": { "type": "call", "title": "telefon", "body": "Incoming call" },
+                    "android": { "priority": "high" }
+                }
+            })
+        } else {
+            serde_json::json!({
+                "message": {
+                    "token": token,
+                    "notification": { "title": "telefon", "body": "New message" },
+                    "android": {
+                        "priority": "high",
+                        "notification": {
+                            "sound": "default",
+                            "default_sound": true,
+                            "channel_id": "telefon_messages",
+                            "notification_priority": "PRIORITY_HIGH"
+                        }
+                    }
+                }
+            })
+        };
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(at.as_str())
+            .json(&body)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let st = resp.status();
+            let t = resp.text().await.unwrap_or_default();
+            anyhow::bail!("fcm http {st}: {t}");
+        }
+        Ok(())
+    }
+}
+
+/// Routes a WAKE to the right push backend by the registered `kind`.
+struct Senders {
+    fcm: Option<FcmSender>,
+    webpush: Option<WebPushSender>,
+}
+
+impl Senders {
+    fn from_env() -> Self {
+        let webpush = match env::var("VAPID_PRIVATE") {
+            Ok(priv_k) if !priv_k.is_empty() => {
+                let subject = env_or("VAPID_SUBJECT", "mailto:admin@telefon.lleo.me");
+                tracing::info!("web push ENABLED (VAPID configured)");
+                Some(WebPushSender { vapid_private: priv_k, subject })
+            }
+            _ => {
+                tracing::info!("web push disabled (no VAPID_PRIVATE in env)");
+                None
+            }
+        };
+        let fcm = match env::var("FCM_SERVICE_ACCOUNT") {
+            Ok(path) if !path.is_empty() => match gcp_auth::CustomServiceAccount::from_file(&path) {
+                Ok(sa) => {
+                    let project_id = sa
+                        .project_id()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| env_or("FCM_PROJECT_ID", ""));
+                    tracing::info!("fcm ENABLED (service-account, project {project_id})");
+                    Some(FcmSender {
+                        project_id,
+                        sa: std::sync::Arc::new(sa),
+                        http: reqwest::Client::new(),
+                    })
+                }
+                Err(e) => {
+                    tracing::warn!("fcm disabled: bad service-account {path}: {e}");
+                    None
+                }
+            },
+            _ => {
+                tracing::info!("fcm disabled (no FCM_SERVICE_ACCOUNT in env)");
+                None
+            }
+        };
+        Self { fcm, webpush }
+    }
+
+    fn wake(&self, target: &[u8; 8], entry: &Entry, is_call: bool) {
+        match entry.kind {
+            // 1 = FCM token, 2 = Web Push subscription JSON.
+            1 => match &self.fcm {
+                Some(f) => f.send(target, &entry.token, is_call),
+                None => tracing::warn!(
+                    "WAKE {} is kind=1 (fcm) but service-account not configured",
+                    hex::encode(target)
+                ),
+            },
+            2 => match &self.webpush {
+                Some(wp) => wp.send(target, &entry.token),
+                None => tracing::warn!(
+                    "WAKE {} is kind=2 (web push) but VAPID not configured",
+                    hex::encode(target)
+                ),
+            },
+            0 => tracing::debug!(
+                "WAKE {} but peer uses foreground socket — no push",
+                hex::encode(target)
+            ),
+            other => tracing::warn!("WAKE {} unknown kind={other}", hex::encode(target)),
+        }
     }
 }
 
@@ -304,11 +488,11 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("(embed this id in the server as NOTIFIER_ID: {:?})", me.id);
 
     let mut registry = Registry::load(registry_path);
-    let sender: Box<dyn PushSender> = Box::new(StubSender);
+    let senders = Senders::from_env();
 
     // Reconnect loop.
     loop {
-        match run_session(&me, &server_x_pub, &server_ed_vk, &ws_url, &mut registry, sender.as_ref())
+        match run_session(&me, &server_x_pub, &server_ed_vk, &ws_url, &mut registry, &senders)
             .await
         {
             Ok(()) => tracing::warn!("session ended cleanly; reconnecting"),
@@ -325,7 +509,7 @@ async fn run_session(
     server_ed_vk: &VerifyingKey,
     ws_url: &str,
     registry: &mut Registry,
-    sender: &dyn PushSender,
+    senders: &Senders,
 ) -> anyhow::Result<()> {
     let (mut ws, _) = tokio_tungstenite::connect_async(ws_url).await?;
 
@@ -354,7 +538,7 @@ async fn run_session(
             msg = ws.next() => {
                 match msg {
                     Some(Ok(Message::Binary(b))) => {
-                        handle_frame(&b, &k_s2c, me, server_x_pub, server_ed_vk, registry, sender);
+                        handle_frame(&b, &k_s2c, me, server_x_pub, server_ed_vk, registry, senders);
                     }
                     Some(Ok(Message::Ping(p))) => { let _ = ws.send(Message::Pong(p)).await; }
                     Some(Ok(Message::Close(_))) | None => {
@@ -381,7 +565,7 @@ fn handle_frame(
     server_x_pub: &[u8; 32],
     server_ed_vk: &VerifyingKey,
     registry: &mut Registry,
-    sender: &dyn PushSender,
+    senders: &Senders,
 ) {
     let Some(inner) = decode_server_frame(frame, k_s2c, &me.x_priv, server_x_pub, server_ed_vk)
     else {
@@ -413,18 +597,15 @@ fn handle_frame(
             tracing::info!("registered {} (kind={})", hex::encode(id), kind);
         }
         CMD_WAKE => {
-            // [target_id:8]
+            // [target_id:8][type:1 optional] — type 1 = call, else message.
             if body.len() < 8 {
                 tracing::warn!("WAKE too short");
                 return;
             }
             let target: [u8; 8] = body[..8].try_into().unwrap();
+            let is_call = body.get(8).copied() == Some(1);
             match registry.get(&target) {
-                Some(e) if e.kind == 1 => sender.send(&target, &e.token),
-                Some(_) => tracing::debug!(
-                    "WAKE {} but peer uses foreground socket — no push",
-                    hex::encode(target)
-                ),
+                Some(e) => senders.wake(&target, e, is_call),
                 None => tracing::debug!("WAKE {} but no token registered", hex::encode(target)),
             }
         }

@@ -29,6 +29,16 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
 anyhow = "1"
 
+# Web Push (RFC 8291) — browser push notifications. VPS notifier (x86_64
+# glibc) only; the Pi instance serves devices and skips this feature.
+web-push = "0.10"
+base64 = "0.13" # must match web-push's base64 (Config / URL_SAFE_NO_PAD)
+
+# FCM (Firebase Cloud Messaging HTTP v1) — push for the native Android app.
+# OAuth2 via the project's service-account JSON.
+gcp_auth = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
 # Size-optimised release for the Pi. panic stays "unwind" (default).
 [profile.release]
 opt-level = "z"

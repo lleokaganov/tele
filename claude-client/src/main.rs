@@ -48,6 +48,7 @@ const CMD_READ_ACK: u8 = 0x2A;
 const CMD_SUBSCRIBE: u8 = 0x40;
 const CMD_PEER_ONLINE: u8 = 0x42;
 const CMD_INTRODUCE: u8 = 0x46;
+const CMD_WAKE: u8 = 0x48;
 
 const DEFAULT_SERVER_X_PUB: &str =
     "4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06";
@@ -248,6 +249,14 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // `wschat wake <id-hex16>` — send one server-bound WAKE for an offline
+    // peer (by 8-byte client id) and exit. Used to test/trigger push without
+    // needing the peer's invite (WAKE only carries the target id).
+    if args.get(1).map(|s| s.as_str()) == Some("wake") {
+        let is_call = args.get(3).map(|s| s.as_str()) == Some("call");
+        return wake_mode(args.get(2).map(|s| s.as_str()).unwrap_or(""), is_call).await;
+    }
+
     // Seeds are optional: if absent, generate a fresh per-session keypair.
     // That gives each bridge session its own identity (so several can run in
     // parallel as distinct contacts), named via WSCHAT_NICK.
@@ -380,6 +389,50 @@ async fn main() -> anyhow::Result<()> {
 }
 
 type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Connect, handshake, send one WAKE for `target_hex` (8-byte client id),
+/// then exit. The relay forwards it to the notifier, which pushes the peer.
+async fn wake_mode(target_hex: &str, is_call: bool) -> anyhow::Result<()> {
+    let raw = hex::decode(target_hex.trim()).map_err(|_| anyhow::anyhow!("bad target hex"))?;
+    if raw.len() != 8 {
+        anyhow::bail!("target must be 8 bytes (16 hex chars), got {}", raw.len());
+    }
+    let target: [u8; 8] = raw.try_into().unwrap();
+
+    // A WAKE doesn't need a stable identity — use a throwaway keypair.
+    let mut x = [0u8; 32];
+    let mut ed = [0u8; 32];
+    OsRng.fill_bytes(&mut x);
+    OsRng.fill_bytes(&mut ed);
+    let me = Identity::from_seeds(x, ed);
+
+    let server_x_pub = hex32(&env_or("WSCHAT_SERVER_X_PUB", DEFAULT_SERVER_X_PUB));
+    let server_ed_pub = hex32(&env_or("WSCHAT_SERVER_ED_PUB", DEFAULT_SERVER_ED_PUB));
+    let server_ed_vk = VerifyingKey::from_bytes(&server_ed_pub).expect("server ed pub");
+    let ws_url = env_or("WS_URL", DEFAULT_WS_URL);
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await?;
+    ws.send(Message::Binary(build_handshake_request(&me, &server_x_pub))).await?;
+    let shared = x25519(me.x_priv, server_x_pub);
+    let (k_c2s, k_s2c) = derive_session(&shared);
+    let ok = matches!(ws.next().await,
+        Some(Ok(Message::Binary(b)))
+            if decode_server_frame(&b, &k_s2c, &me.x_priv, &server_x_pub, &server_ed_vk)
+                .map(|i| i.len() >= 3 && i[2] == CMD_HANDSHAKE_OK).unwrap_or(false));
+    if !ok {
+        anyhow::bail!("handshake failed");
+    }
+    // body = [target:8][type:1] — type 1 = call (ringtone), 0 = message.
+    let mut wbody = target.to_vec();
+    wbody.push(if is_call { 1 } else { 0 });
+    let frame = build_server_bound(&me, &server_x_pub, &k_c2s, &pack_inner(1, CMD_WAKE, &wbody));
+    ws.send(Message::Binary(frame)).await?;
+    eprintln!("[wschat] WAKE sent for {}", hex::encode(target));
+    // Give the relay a moment to forward before we drop the socket.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let _ = ws.close(None).await;
+    Ok(())
+}
 
 /// Build a peer TEXT frame with an explicit message id (so the outbox can
 /// re-send the same id). Inner seq is irrelevant to the peer (it keys off

@@ -422,12 +422,15 @@ async fn apply_wake(body: &[u8], hub: &Arc<RwLock<HubState>>) -> Result<(), Rout
         tracing::warn!("wake body too short");
         return Err(RouteError::TooShort);
     }
-    forward_to_notifier(CMD_WAKE, &body[..8], hub).await
+    // Forward the target id plus an optional 1-byte type (0=message, 1=call)
+    // so the notifier can choose the right push (a ringtone for calls).
+    let n = body.len().min(9);
+    forward_to_notifier(CMD_WAKE, &body[..n], hub).await
 }
 
 /// PUSH_REGISTER: client registers its push token. Body = [kind:1][token].
-/// The server prepends the sender's id (taken from the verified session, so
-/// it can't be forged) before forwarding to the notifier.
+/// The server prepends the sender's id (from the verified session, so it
+/// can't be forged) before forwarding to the notifier.
 async fn apply_push_register(
     sender_id: &ClientId,
     body: &[u8],

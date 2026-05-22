@@ -23,12 +23,16 @@ console.log('[boot] storage ready, wiring UI')
 
 const $ = (id) => document.getElementById(id)
 
+// True only inside the Capacitor native shell (Android/iOS), false in the
+// browser PWA. Used to pick FCM vs Web Push and the API base below.
+function isNativePlatform() {
+  return !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function'
+    && window.Capacitor.isNativePlatform())
+}
+
 // In a Capacitor native build the page is local; network calls (preview)
 // must hit the real server. In the browser PWA, same-origin (empty base).
-const API_BASE = (window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function'
-  && window.Capacitor.isNativePlatform())
-  ? 'https://tele.karlson.ru'
-  : ''
+const API_BASE = isNativePlatform() ? 'https://tele.karlson.ru' : ''
 
 /* =================================== toasts =================================== */
 
@@ -142,6 +146,27 @@ function persist() {
   savePeers(copy)
 }
 
+// Unread incoming-message counters per contact (idHex -> count). Persisted
+// so the badge survives reloads. Bumped when a message arrives for a chat
+// that isn't currently open; cleared when that chat is opened.
+const unread = (() => {
+  try { return JSON.parse(localStorage.getItem('telefon_unread') || '{}') } catch { return {} }
+})()
+function persistUnread() {
+  try { localStorage.setItem('telefon_unread', JSON.stringify(unread)) } catch {}
+}
+function bumpUnread(idHex) {
+  unread[idHex] = (unread[idHex] || 0) + 1
+  persistUnread()
+  renderContacts()
+}
+function clearUnread(idHex) {
+  if (!unread[idHex]) return
+  delete unread[idHex]
+  persistUnread()
+  renderContacts()
+}
+
 // Push all stored peers into the WASM session, ignore duplicates.
 for (const p of Object.values(peerBook)) {
   try { client.addPeerFromQr(p.qr) } catch (e) { console.warn('reload peer', e) }
@@ -159,10 +184,15 @@ function renderContacts() {
   const ul = $('contacts')
   ul.innerHTML = ''
   const entries = Object.entries(peerBook).map(([id, p]) => ({
-    id, label: p.label || '', online: !!p.online,
+    id, label: p.label || '', online: !!p.online, unread: unread[id] || 0,
   }))
+  // Sort into four groups, alphabetical within each. Online always beats
+  // offline at every unread level, so live contacts never sink below stale
+  // ones: 0) online+unread, 1) offline+unread, 2) online, 3) offline.
+  const rank = (c) => (c.unread > 0 ? (c.online ? 0 : 1) : (c.online ? 2 : 3))
   entries.sort((a, b) => {
-    if (a.online !== b.online) return a.online ? -1 : 1
+    const ra = rank(a), rb = rank(b)
+    if (ra !== rb) return ra - rb
     return (a.label || a.id).localeCompare(b.label || b.id, 'ru')
   })
 
@@ -170,16 +200,161 @@ function renderContacts() {
     const li = document.createElement('li')
     li.className = 'contact'
     li.dataset.id = c.id
+    const badge = c.unread > 0
+      ? `<div class="unread-badge">${c.unread > 99 ? '99+' : c.unread}</div>`
+      : ''
     li.innerHTML = `
       <div class="avatar ${c.online ? '' : 'off'}">${escapeHtml(contactInitials(c.label, c.id))}</div>
       <div class="name">${escapeHtml(c.label || '(unnamed)')}</div>
       <div class="id">${c.id.slice(0, 8)}</div>
+      ${badge}
       <div class="dot ${c.online ? 'dot-on' : 'dot-off'}"></div>
     `
-    li.onclick = () => openCallView(c.id)
+    li.onclick = () => {
+      // A long-press already opened the context menu; swallow the trailing
+      // click so it doesn't also open the chat.
+      if (Date.now() - lastContactMenuTs < 600) return
+      openCallView(c.id)
+    }
+    attachLongPress(li, c.id)
     ul.appendChild(li)
   }
   $('contacts-empty').hidden = entries.length > 0
+}
+
+// Wire a ~500ms long-press on a contact <li> that opens its context menu.
+// Pointer Events cover both touch and mouse. The timer is cancelled if the
+// pointer is released early, moves too far (a scroll/drag), or is cancelled.
+const LONGPRESS_MS  = 500
+const LONGPRESS_MOVE = 10  // px; beyond this it's a scroll, not a press
+let lastContactMenuTs = 0  // guards the contact tap from firing after long-press
+
+function attachLongPress(li, idHex) {
+  let timer = null
+  let startX = 0, startY = 0
+  const clear = () => { if (timer) { clearTimeout(timer); timer = null } }
+  li.addEventListener('pointerdown', (e) => {
+    // Primary button / touch only.
+    if (e.button && e.button !== 0) return
+    startX = e.clientX; startY = e.clientY
+    clear()
+    timer = setTimeout(() => {
+      timer = null
+      lastContactMenuTs = Date.now()
+      openContactMenu(idHex, e.clientX, e.clientY)
+    }, LONGPRESS_MS)
+  })
+  li.addEventListener('pointermove', (e) => {
+    if (!timer) return
+    if (Math.hypot(e.clientX - startX, e.clientY - startY) > LONGPRESS_MOVE) clear()
+  })
+  li.addEventListener('pointerup', clear)
+  li.addEventListener('pointercancel', clear)
+  li.addEventListener('pointerleave', clear)
+  // Desktop: right-click is the natural equivalent of a long-press.
+  li.addEventListener('contextmenu', (e) => {
+    e.preventDefault()
+    lastContactMenuTs = Date.now()
+    openContactMenu(idHex, e.clientX, e.clientY)
+  })
+}
+
+/* =================================== contact context menu =================================== */
+
+let contactMenuEl = null
+
+function closeContactMenu() {
+  if (contactMenuEl) { contactMenuEl.remove(); contactMenuEl = null }
+}
+
+// Small action-sheet anchored near the press point. Reuses the .msg-menu look.
+function openContactMenu(idHex, x, y) {
+  closeContactMenu()
+  if (!peerBook[idHex]) return
+  const menu = document.createElement('div')
+  menu.className = 'msg-menu'
+  const item = (label, fn, cls = '') => {
+    const b = document.createElement('button')
+    b.className = 'msg-menu-item' + (cls ? ' ' + cls : '')
+    b.textContent = label
+    b.onclick = (e) => { e.stopPropagation(); closeContactMenu(); fn() }
+    menu.appendChild(b)
+  }
+  item('✏️ Rename', () => openRenameDialog(idHex))
+  item('🗑 Delete contact', () => openDeleteContactDialog(idHex), 'danger')
+
+  document.body.appendChild(menu)
+  const r = menu.getBoundingClientRect()
+  const px = Math.max(8, Math.min(x, window.innerWidth  - r.width  - 8))
+  const py = Math.max(8, Math.min(y, window.innerHeight - r.height - 8))
+  menu.style.left = px + 'px'
+  menu.style.top  = py + 'px'
+  contactMenuEl = menu
+  // Close on the next outside interaction.
+  setTimeout(() => {
+    document.addEventListener('click',       closeContactMenu, { once: true })
+    document.addEventListener('contextmenu', closeContactMenu, { once: true })
+  }, 0)
+}
+
+function openRenameDialog(idHex) {
+  const p = peerBook[idHex]
+  if (!p) return
+  const dlg = $('dialog-rename')
+  const inp = $('rename-input')
+  inp.value = p.label || ''
+  dlg.hidden = false
+  inp.focus()
+  inp.select()
+  const close = () => { dlg.hidden = true }
+  const save = () => {
+    const v = inp.value.trim()
+    if (peerBook[idHex]) {
+      peerBook[idHex].label = v || null
+      persist()
+      renderContacts()
+      // Keep the open chat header in sync if it's this peer.
+      if (currentPeerId === idHex) refreshCallHeader()
+    }
+    close()
+  }
+  $('rename-cancel').onclick = close
+  $('rename-save').onclick = save
+  inp.onkeydown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); save() }
+    else if (e.key === 'Escape') { e.preventDefault(); close() }
+  }
+}
+
+function openDeleteContactDialog(idHex) {
+  const p = peerBook[idHex]
+  if (!p) return
+  const dlg = $('dialog-delete-contact')
+  const name = p.label || idHex.slice(0, 8)
+  $('delete-contact-text').textContent =
+    `Delete "${name}" and all messages & files? This cannot be undone.`
+  dlg.hidden = false
+  const close = () => { dlg.hidden = true }
+  $('delete-contact-cancel').onclick = close
+  $('delete-contact-confirm').onclick = async () => {
+    // Tear down everything tied to this peer: contact entry, unread badge,
+    // chat history + files, and the WASM session peer (best-effort).
+    delete peerBook[idHex]
+    persist()
+    clearUnread(idHex)
+    try { await Storage.clearHistory(idHex) } catch (e) { console.warn('clearHistory', e) }
+    try { client.removePeer(hexU8(idHex)) } catch (e) { console.warn('removePeer', e) }
+    // If we're looking at this contact's chat, drop back to the list.
+    if (currentPeerId === idHex) {
+      try { call.hangup() } catch {}
+      currentPeerId = null
+      showScreen('contacts')
+      if (history.state?.screen === 'call') history.back()
+    }
+    renderContacts()
+    close()
+    toast(`Deleted ${name}`, 'success')
+  }
 }
 
 function escapeHtml(s) {
@@ -250,6 +425,14 @@ function qrXpubBytes(qr) {
   } catch { return null }
 }
 
+// Fire-and-forget push-wake for an offline recipient. The ClientId is the
+// first 8 bytes of the peer's X25519 public key, which is exactly the idHex
+// we key the peer book by. No-op if the peer is currently online.
+function maybeWake(idHex, isCall = false) {
+  if (!idHex || peerBook[idHex]?.online) return
+  try { client.sendWake(hexU8(idHex), isCall) } catch (e) { console.warn('wake', e) }
+}
+
 function setOnline(xPub, online) {
   // x_pub[..8] is the ClientId by definition.
   const id = u8hex(xPub.slice(0, 8))
@@ -272,13 +455,21 @@ function showScreen(name) {
 
 async function openCallView(idHex) {
   currentPeerId = idHex
+  // Opening (or switching) a conversation always starts in normal chat mode —
+  // drop any leftover search bar/state from the previous peer.
+  searchActive = false
+  $('search-bar').hidden = true
+  $('search-info').textContent = ''
   refreshCallHeader()
-  await refreshChat()
   resetCallButtons('idle')
+  // Show the screen BEFORE filling the chat: a hidden container has no
+  // layout, so scrollHeight reads 0 and the scroll-to-bottom is a no-op.
   showScreen('call')
+  await refreshChat()
   // Opening the chat means the user is looking at it — read-ack all
-  // incoming messages so the sender sees ✓✓.
+  // incoming messages so the sender sees ✓✓, and clear the unread badge.
   markHistoryRead(idHex)
+  clearUnread(idHex)
   // Push a history entry so the browser/system back-button (Backspace on
   // desktop, swipe-back on Android, etc.) closes the call instead of
   // leaving it running invisibly behind the contacts list.
@@ -378,6 +569,10 @@ function resetCallButtons(state) {
   $('video-btn').hidden   = !inCall
   $('speaker-btn').hidden = !inCall
   $('res-select').hidden  = !inCall
+  // Device pickers follow the same lifecycle; populateDeviceSelectors() may
+  // still re-hide them afterwards if only one device of a kind exists.
+  $('cam-select').hidden  = !inCall
+  $('mic-select').hidden  = !inCall
   $('call-state').textContent = state
 }
 
@@ -406,17 +601,89 @@ async function markHistoryRead(idHex) {
   }
 }
 
+// Windowed chat rendering. Opening a conversation only renders the most
+// recent CHAT_WINDOW messages; older ones are paged in on demand as the user
+// scrolls toward the top (see the #chat scroll handler below). This keeps the
+// DOM small and the open-chat path fast even for very long histories.
+const CHAT_WINDOW    = 50   // initial tail rendered on open
+const CHAT_PAGE      = 25   // batch size when paging older messages upward
+const SCROLL_TRIGGER = 80   // px from the top that triggers an older-page load
+
+let oldestLoadedTs = null   // ts of the oldest message currently in the DOM
+let noMoreOlder    = false  // true once we've reached the start of history
+let isLoadingOlder = false  // guard against overlapping upward loads
+let searchActive   = false  // true while the search bar is showing results
+
+// Render one stored message into a DOM node (file rows are async).
+async function renderMessageNode(m) {
+  return isFileRef(m.body) ? await renderFileMessage(m) : renderTextMessage(m)
+}
+
 async function refreshChat() {
   const box = $('chat')
   box.innerHTML = ''
   renderedMessages.clear()
+  oldestLoadedTs = null
+  noMoreOlder = false
+  isLoadingOlder = false
   if (!currentPeerId) return
-  const rows = await Storage.history(currentPeerId)
-  for (const m of rows) {
-    const node = isFileRef(m.body) ? await renderFileMessage(m) : renderTextMessage(m)
-    box.appendChild(node)
+  const rows = await Storage.historyTail(currentPeerId, CHAT_WINDOW)
+  for (const m of rows) box.appendChild(await renderMessageNode(m))
+  if (rows.length > 0) oldestLoadedTs = rows[0].ts
+  // If the tail already covers the whole history there's nothing above it.
+  if (rows.length < CHAT_WINDOW) noMoreOlder = true
+  scrollChatToBottom()
+  // Images decode asynchronously and grow the chat after first layout;
+  // re-pin to the bottom as each one resolves so the newest stays in view.
+  for (const img of box.querySelectorAll('img')) {
+    if (!img.complete) img.addEventListener('load', scrollChatToBottom, { once: true })
   }
-  box.scrollTop = box.scrollHeight
+}
+
+// Page older messages in when the user scrolls near the top. The tricky part
+// is preserving the visual position: prepending nodes grows scrollHeight, so
+// we re-anchor scrollTop by the height delta to keep the content from jumping.
+async function loadOlderMessages() {
+  if (isLoadingOlder || noMoreOlder || !currentPeerId || oldestLoadedTs == null) return
+  isLoadingOlder = true
+  try {
+    const rows = await Storage.historyBefore(currentPeerId, oldestLoadedTs, CHAT_PAGE)
+    // The query bound is inclusive, so the page can re-include rows already
+    // on screen (those sharing the boundary timestamp). Drop them by id.
+    const fresh = rows.filter((m) => !renderedMessages.has(m.id))
+    if (fresh.length === 0) { noMoreOlder = true; return }
+    const box = $('chat')
+    const prevHeight = box.scrollHeight
+    const prevTop    = box.scrollTop
+    // Build then prepend in order: the oldest of the batch ends up on top.
+    const frag = document.createDocumentFragment()
+    for (const m of fresh) frag.appendChild(await renderMessageNode(m))
+    box.insertBefore(frag, box.firstChild)
+    oldestLoadedTs = fresh[0].ts
+    // Fewer than a full page of *raw* rows means we've hit the start.
+    if (rows.length < CHAT_PAGE) noMoreOlder = true
+    // Restore the viewport: shift down by exactly how much we grew on top.
+    box.scrollTop = prevTop + (box.scrollHeight - prevHeight)
+  } finally {
+    isLoadingOlder = false
+  }
+}
+
+// Attach the upward-paging scroll listener once, at module load. It is inert
+// while in search mode (searchActive) or when there's nothing older to fetch.
+$('chat').addEventListener('scroll', () => {
+  if (searchActive) return
+  if (oldestLoadedTs != null && $('chat').scrollTop < SCROLL_TRIGGER) loadOlderMessages()
+})
+
+// Pin the chat to the newest message. Double rAF waits for layout to settle
+// (screen just became visible / nodes just inserted) before measuring.
+function scrollChatToBottom() {
+  const box = $('chat')
+  if (!box) return
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => { box.scrollTop = box.scrollHeight })
+  })
 }
 
 // Matches bare http(s) URLs. The trailing class excludes characters that
@@ -566,11 +833,73 @@ async function renderFileMessage(m) {
   return row
 }
 
+// Strip path separators and other characters that are unsafe (or merely
+// awkward) in a filesystem path. Falls back to a generic name if the result
+// would be empty, so writeFile() always gets a usable leaf name.
+function sanitizeFileName(name) {
+  const cleaned = String(name || '')
+    .replace(/[\/\\]/g, '_')        // no directory traversal
+    .replace(/[\x00-\x1f<>:"|?*]/g, '_')
+    .replace(/^\.+/, '')            // no leading dots (hidden / "..")
+    .trim()
+  return cleaned || 'file'
+}
+
+// Convert a Blob to a bare base64 string (no data: URI prefix), as required
+// by Filesystem.writeFile. Done via FileReader.readAsDataURL so the browser
+// handles the binary→base64 encoding natively (no manual chunking needed).
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = reader.result || ''
+      const comma = result.indexOf(',')
+      // result is "data:<mime>;base64,<payload>" — keep only the payload.
+      resolve(comma >= 0 ? result.slice(comma + 1) : result)
+    }
+    reader.onerror = () => reject(reader.error || new Error('FileReader failed'))
+    reader.readAsDataURL(blob)
+  })
+}
+
+// Native (Capacitor) path for opening/saving a received file. The browser's
+// `<a download>` does not work inside an Android WebView for blob URLs, so we
+// instead write the blob to the app cache and hand its file:// URI to the
+// system share sheet, which offers "open in…" (PDF viewer, etc.) and "save".
+async function openFileNative(f) {
+  try {
+    const FS = window.Capacitor?.Plugins?.Filesystem
+    const Share = window.Capacitor?.Plugins?.Share
+    if (!FS || !Share) {
+      console.warn('Filesystem/Share plugin unavailable (run cap sync?)')
+      toast('Cannot open file')
+      return
+    }
+    const name = sanitizeFileName(f.name)
+    const base64 = await blobToBase64(f.blob)
+    // CACHE is transient app storage — fine for a hand-off via the chooser.
+    await FS.writeFile({ path: name, data: base64, directory: 'CACHE' })
+    const { uri } = await FS.getUri({ path: name, directory: 'CACHE' })
+    await Share.share({ title: f.name, url: uri })
+  } catch (e) {
+    console.warn('openFileNative failed:', e)
+    toast('Cannot open file')
+  }
+}
+
 function fileMeta(f) {
   const div = document.createElement('div')
   div.className = 'filemeta'
   const size = humanBytes(f.size)
-  if (f.blob) {
+  if (f.blob && isNativePlatform()) {
+    // In the native shell a blob `<a download>` is a no-op; route taps through
+    // the system chooser instead (PDF viewer, "save to Downloads", etc.).
+    const btn = document.createElement('span')
+    btn.className = 'filelink'
+    btn.textContent = `📎 ${f.name} · ${size}`
+    btn.onclick = () => openFileNative(f)
+    div.appendChild(btn)
+  } else if (f.blob) {
     const a = document.createElement('a')
     a.href = URL.createObjectURL(f.blob)
     a.download = f.name
@@ -687,6 +1016,11 @@ const call = new CallManager(client, {
   onRemoteStream: (s) => { $('peer-video').srcObject = s || null },
   onState: (s) => {
     if (currentPeerId) resetCallButtons(s)
+    if (s === 'connecting' || s === 'connected') {
+      // Media is open by now, so device labels are available — fill the
+      // camera / microphone pickers. Safe to call repeatedly.
+      populateDeviceSelectors()
+    }
     if (s === 'connected') {
       $('mute-btn').textContent = '🔇 Mute'
       stopAllRings()
@@ -703,12 +1037,17 @@ const call = new CallManager(client, {
     client.sendDeliveryAck(peerId, msgId)
     if (!isNew) return
     if (currentPeerId === idHex) {
-      appendChatRow({ id: msgId, dir: 'in', body: text, status: 'received' })
-      $('chat').scrollTop = $('chat').scrollHeight
+      // While searching we keep the result list intact; the message is stored
+      // and shows up once search is closed. Read-ack it either way.
+      if (!searchActive) {
+        appendChatRow({ id: msgId, dir: 'in', body: text, status: 'received' })
+        $('chat').scrollTop = $('chat').scrollHeight
+      }
       client.sendReadAck(peerId, msgId); readAcked.add(msgId)  // chat open → read right away
     } else {
       const p = peerBook[idHex]
       toast(`${p?.label || idHex.slice(0, 8)}: ${text}`)
+      bumpUnread(idHex)
     }
   },
   onDelivered: async (peerId, msgId) => {
@@ -770,6 +1109,7 @@ const call = new CallManager(client, {
     } else {
       const p = peerBook[idHex]
       toast(`${p?.label || idHex.slice(0,8)} sent: ${meta.name}`)
+      bumpUnread(idHex)
     }
   },
   onIncomingCall: (peerId) => {
@@ -829,7 +1169,17 @@ client.onState = ({ state, detail }) => {
     banner.hidden = true
   }
   // Re-subscribe on (re-)connect so presence works after a reconnect.
-  if (state === 'established') subscribeAll()
+  if (state === 'established') {
+    subscribeAll()
+    // Register/refresh our push token now that the server can receive it.
+    // Idempotent — safe to call on every (re-)connect. The native app uses
+    // FCM (kind 1); the browser PWA uses Web Push (kind 2).
+    if (isNativePlatform()) {
+      registerFcm()
+    } else {
+      registerWebPush()
+    }
+  }
 }
 
 client.onConsole = (line) => console.log(line)
@@ -949,6 +1299,144 @@ function showAddError(text) {
 
 /* =================================== invite share =================================== */
 
+/* =================================== web push =================================== */
+
+// VAPID application server key (public half). The server holds the private
+// half and signs Web Push requests with it. Must match the server config.
+const VAPID_PUBLIC = 'BNFDN_DiwG9TUBfqEaPBwWdhWk427eV8A8fUbjR56STlN_eXHAZ2IJomddMVKIRpE7k-OY1dqg5oUjpAexoCrkw'
+
+// Convert a base64url-encoded VAPID key into the Uint8Array that the
+// PushManager.subscribe applicationServerKey option expects.
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4)
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const raw = atob(base64)
+  const out = new Uint8Array(raw.length)
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i)
+  return out
+}
+
+// Subscribe to Web Push and hand the subscription to the server so it can
+// wake this client when a peer messages/calls it while offline. Idempotent:
+// getSubscription() returns the existing one on repeat calls. Push is not
+// critical to core operation — never let a failure here break startup.
+async function registerWebPush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    console.warn('web push unsupported in this environment')
+    return
+  }
+  try {
+    const reg = await navigator.serviceWorker.ready
+    if (Notification.permission === 'default') {
+      const perm = await Notification.requestPermission()
+      if (perm !== 'granted') return
+    }
+    if (Notification.permission !== 'granted') return
+    let sub = await reg.pushManager.getSubscription()
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC),
+      })
+    }
+    client.sendPushRegister(2, JSON.stringify(sub.toJSON()))
+  } catch (e) {
+    console.warn('web push register failed:', e)
+  }
+}
+
+/* =================================== fcm push (native) =================================== */
+
+// Guard so the @capacitor/push-notifications listeners are wired exactly
+// once, even though registerFcm() runs on every (re-)connect.
+let _fcmListenersWired = false
+
+// Register for Firebase Cloud Messaging in the native Capacitor app and hand
+// the FCM token to the server (kind 1) so it can wake us when offline. The
+// plugin is reached through the runtime-injected window.Capacitor.Plugins
+// global (this project ships unbundled www files and accesses every plugin —
+// e.g. App — the same way), so a browser build never trips on a missing
+// module. Push is not critical to core operation; never let a failure here
+// break startup.
+async function registerFcm() {
+  if (!isNativePlatform()) return
+  try {
+    const PushNotifications = window.Capacitor?.Plugins?.PushNotifications
+    if (!PushNotifications) {
+      console.warn('PushNotifications plugin unavailable (run cap sync?)')
+      return
+    }
+
+    if (!_fcmListenersWired) {
+      _fcmListenersWired = true
+
+      // The token arrives asynchronously after register(); also fires again
+      // when the OS rotates it. Always re-send so the server stays current.
+      PushNotifications.addListener('registration', (token) => {
+        try { client.sendPushRegister(1, token.value) }
+        catch (e) { console.warn('fcm token send failed:', e) }
+      })
+
+      PushNotifications.addListener('registrationError', (err) => {
+        console.warn('fcm registration error:', err)
+      })
+
+      // When the app is in the foreground the OS does NOT display an FCM
+      // notification — it is delivered here instead. A toast is invisible
+      // with the screen off, so raise a real LOCAL notification (system tray,
+      // sound via the telefon_messages channel) so it's seen regardless.
+      PushNotifications.addListener('pushNotificationReceived', (notif) => {
+        console.log('fcm push received (foreground):', notif)
+        const title = notif?.title || notif?.data?.title || 'telefon'
+        const body  = notif?.body  || notif?.data?.body  || 'New message'
+        try {
+          const LN = window.Capacitor?.Plugins?.LocalNotifications
+          if (LN) {
+            LN.schedule({ notifications: [{
+              id: Date.now() % 1000000,
+              title, body,
+              channelId: 'telefon_messages',
+            }] })
+          }
+        } catch (e) { console.warn('local notif:', e) }
+        try { toast([title, body].filter(Boolean).join(': ')) } catch {}
+      })
+    }
+
+    // Ask for the POST_NOTIFICATIONS permission (Android 13+) before
+    // registering. On older Android requestPermissions() resolves granted.
+    let perm = await PushNotifications.checkPermissions()
+    if (perm.receive === 'prompt' || perm.receive === 'prompt-with-rationale') {
+      perm = await PushNotifications.requestPermissions()
+    }
+    if (perm.receive !== 'granted') {
+      console.warn('fcm permission not granted:', perm.receive)
+      return
+    }
+
+    // Create a high-importance channel so notifications make sound + show a
+    // heads-up banner. FCM payloads target this channel_id ("telefon_messages").
+    // Without an explicit HIGH channel, Android's default is silent.
+    try {
+      await PushNotifications.createChannel({
+        id: 'telefon_messages',
+        name: 'Messages & calls',
+        description: 'Incoming messages and calls',
+        importance: 5,    // MAX → heads-up banner + sound
+        sound: 'default',
+        vibration: true,
+        visibility: 1,    // visible on the lock screen
+      })
+    } catch (e) { console.warn('createChannel failed:', e) }
+
+    // Triggers the FCM registration; the token is delivered via the
+    // 'registration' listener above.
+    await PushNotifications.register()
+  } catch (e) {
+    console.warn('fcm register failed:', e)
+  }
+}
+
 /* =================================== PWA install =================================== */
 
 // Register the Service Worker once. Without it Chrome won't surface the
@@ -1051,6 +1539,28 @@ function closeMsgMenu() {
   if (msgMenuEl) { msgMenuEl.remove(); msgMenuEl = null }
 }
 
+// Copy a message's text to the clipboard. Native WebView often doesn't pop the
+// Android "Copy" action on selection, and free selection grabs surrounding
+// chrome (ticks/time), so we offer an explicit menu item that copies just the
+// message text.
+async function copyMsgText(row) {
+  const el = row.querySelector('.msg-text')
+  const text = el ? el.textContent : ''
+  if (!text) return
+  try {
+    const Cap = window.Capacitor?.Plugins?.Clipboard
+    if (Cap) await Cap.write({ string: text })
+    else if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text)
+    else {
+      const ta = document.createElement('textarea')
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'
+      document.body.appendChild(ta); ta.select()
+      document.execCommand('copy'); ta.remove()
+    }
+    toast('Copied')
+  } catch (e) { console.warn('copy failed:', e); toast('Copy failed') }
+}
+
 function openMsgMenu(row, x, y) {
   closeMsgMenu()
   lastMenuTs = Date.now()
@@ -1068,6 +1578,7 @@ function openMsgMenu(row, x, y) {
     menu.appendChild(b)
   }
   if (isOut && !isFile) item('✏️ Edit', () => enterEditMode(msgId))
+  if (!isFile) item('📋 Copy', () => copyMsgText(row))
   item('🗑 Delete', () => openDeleteDialog(msgId, isOut), 'danger')
 
   document.body.appendChild(menu)
@@ -1092,6 +1603,7 @@ async function enterEditMode(msgId) {
   const inp = $('text-input')
   inp.value = m.body
   inp.focus()
+  autoGrowInput()
   $('edit-banner').hidden = false
   renderedMessages.get(msgId)?.classList.add('editing')
 }
@@ -1101,7 +1613,19 @@ function cancelEdit() {
   editingMsgId = null
   $('text-input').value = ''
   $('edit-banner').hidden = true
+  autoGrowInput()
 }
+
+// Grow the composer textarea to fit its content up to the CSS max-height
+// (then it scrolls internally). Called on input and after programmatic
+// value changes (send / edit / cancel).
+function autoGrowInput() {
+  const ta = $('text-input')
+  if (!ta) return
+  ta.style.height = 'auto'
+  ta.style.height = Math.min(ta.scrollHeight, 120) + 'px'
+}
+$('text-input').addEventListener('input', autoGrowInput)
 
 function openDeleteDialog(msgId, isOut) {
   closeMsgMenu()
@@ -1172,7 +1696,8 @@ $('btn-clear-history').onclick = () => {
   ok.onclick = async () => {
     await Storage.clearHistory(currentPeerId)
     cancelEdit()
-    await refreshChat()
+    if (searchActive) await closeSearch()
+    else await refreshChat()
     close()
   }
   btns.appendChild(cancel); btns.appendChild(ok)
@@ -1180,6 +1705,117 @@ $('btn-clear-history').onclick = () => {
   overlay.onclick = (e) => { if (e.target === overlay) close() }
   document.body.appendChild(overlay)
 }
+
+/* =================================== chat search =================================== */
+
+// Search mode swaps the normal windowed chat for a flat list of matching
+// messages, with the matched fragment highlighted. Leaving search (✕ / Escape
+// / empty query) restores the normal windowed view via refreshChat().
+
+let searchDebounce = null
+
+function openSearch() {
+  if (!currentPeerId) return
+  searchActive = true
+  $('search-bar').hidden = false
+  $('search-input').value = ''
+  $('search-info').textContent = ''
+  $('search-input').focus()
+}
+
+async function closeSearch() {
+  if (!searchActive) return
+  searchActive = false
+  $('search-bar').hidden = true
+  $('search-info').textContent = ''
+  clearTimeout(searchDebounce)
+  // Back to the normal windowed conversation, pinned to the bottom.
+  await refreshChat()
+}
+
+async function runSearch(query) {
+  if (!searchActive || !currentPeerId) return
+  const q = query.trim()
+  const box = $('chat')
+  if (!q) {
+    // Empty field: clear results but stay in search mode (don't reload chat).
+    box.innerHTML = ''
+    renderedMessages.clear()
+    $('search-info').textContent = ''
+    return
+  }
+  const rows = await Storage.search(currentPeerId, q)
+  box.innerHTML = ''
+  renderedMessages.clear()
+  for (const m of rows) box.appendChild(renderSearchHit(m, q))
+  $('search-info').textContent = rows.length
+    ? `${rows.length} found`
+    : 'Nothing found'
+  // Results read top-down, newest at the bottom — show the start of the list.
+  box.scrollTop = 0
+}
+
+// Like renderTextMessage, but highlights every case-insensitive occurrence of
+// `query` with <mark>. URLs are still linkified; highlight is applied only to
+// the plain-text spans so anchors stay intact.
+function renderSearchHit(m, query) {
+  const row = makeMsgShell(m)
+  const text = document.createElement('span')
+  text.className = 'msg-text'
+  highlightLinkifyInto(text, m.body, query)
+  row.insertBefore(text, row.firstChild)
+  return row
+}
+
+// Render `body` into `span`: linkify bare URLs (as anchors) and wrap matches
+// of `query` in plain-text segments with <mark>. Reuses URL_RE so link
+// detection stays identical to the normal renderer.
+function highlightLinkifyInto(span, body, query) {
+  let last = 0
+  for (const match of body.matchAll(URL_RE)) {
+    const raw = match[0]
+    const url = trimTrailingPunct(raw)
+    const start = match.index
+    if (start > last) appendHighlighted(span, body.slice(last, start), query)
+    const a = document.createElement('a')
+    a.className = 'msg-link'
+    a.href = url
+    a.target = '_blank'
+    a.rel = 'noopener noreferrer'
+    a.textContent = url
+    span.appendChild(a)
+    last = start + url.length
+  }
+  if (last < body.length) appendHighlighted(span, body.slice(last), query)
+}
+
+// Append `text` to `span`, wrapping each case-insensitive `query` hit in <mark>.
+function appendHighlighted(span, text, query) {
+  const q = query.toLowerCase()
+  const hay = text.toLowerCase()
+  let from = 0
+  let idx = hay.indexOf(q)
+  while (idx !== -1) {
+    if (idx > from) span.appendChild(document.createTextNode(text.slice(from, idx)))
+    const mark = document.createElement('mark')
+    mark.textContent = text.slice(idx, idx + q.length)
+    span.appendChild(mark)
+    from = idx + q.length
+    idx = hay.indexOf(q, from)
+  }
+  if (from < text.length) span.appendChild(document.createTextNode(text.slice(from)))
+}
+
+$('btn-search').onclick = () => { searchActive ? closeSearch() : openSearch() }
+$('search-close').onclick = () => closeSearch()
+$('search-input').addEventListener('input', (e) => {
+  const q = e.target.value
+  clearTimeout(searchDebounce)
+  searchDebounce = setTimeout(() => runSearch(q), 200)
+})
+$('search-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { e.preventDefault(); closeSearch() }
+})
 
 /* =================================== call-screen wiring =================================== */
 
@@ -1199,6 +1835,8 @@ $('call-btn').onclick = () => {
   client.introduce(peerId, nickname || '')
   call.call(peerId)
   playOutgoing()
+  // Push-wake an offline callee so a backgrounded app can ring.
+  maybeWake(currentPeerId, true)  // true = call → ringtone push
 }
 $('hangup-btn').onclick = () => call.hangup()
 $('switch-cam').onclick = () => call.switchCamera()
@@ -1212,6 +1850,38 @@ $('video-btn').onclick = () => {
 }
 $('res-select').onchange = () => {
   call.setVideoResolution(parseInt($('res-select').value, 10))
+}
+
+/* Camera / microphone pickers — appear during a call when more than one
+ * device of a kind is present. Switching replaces the corresponding track
+ * in the live RTCPeerConnection without renegotiating. */
+async function populateDeviceSelectors() {
+  let devs
+  try { devs = await call.listDevices() } catch { return }
+  fillDeviceSelect($('cam-select'), devs.videoInputs, 'Camera')
+  fillDeviceSelect($('mic-select'), devs.audioInputs, 'Microphone')
+}
+
+function fillDeviceSelect(sel, list, kindLabel) {
+  const prev = sel.value
+  sel.innerHTML = ''
+  list.forEach((d, i) => {
+    const opt = document.createElement('option')
+    opt.value = d.deviceId
+    opt.textContent = d.label || `${kindLabel} ${i + 1}`
+    sel.appendChild(opt)
+  })
+  // Restore the previous selection if it still exists in the new list.
+  if (list.some(d => d.deviceId === prev)) sel.value = prev
+  // A single (or zero) device makes the picker pointless — hide it.
+  sel.hidden = list.length < 2
+}
+
+$('cam-select').onchange = () => {
+  call.setVideoInput($('cam-select').value)
+}
+$('mic-select').onchange = () => {
+  call.setAudioInput($('mic-select').value)
 }
 
 /* speaker toggle — earpiece vs loudspeaker (where the browser exposes
@@ -1258,11 +1928,16 @@ $('send-text').onclick = async () => {
     return
   }
 
+  // Sending while searching: drop back to the live conversation so the new
+  // message lands in (and the user sees) the normal view, not the result list.
+  if (searchActive) await closeSearch()
+
   // Persist first so the message survives a refresh / offline retry.
   const msgId = await Storage.saveOutgoing(currentPeerId, text)
   appendChatRow({ id: msgId, dir: 'out', body: text, status: 'pending' })
   $('chat').scrollTop = $('chat').scrollHeight
   $('text-input').value = ''
+  autoGrowInput()
   // Make sure recipient has our keys, then send. If WS is down the
   // outbox entry stays and we retry on PEER_ONLINE.
   client.introduce(peerId, nickname || '')
@@ -1271,6 +1946,8 @@ $('send-text').onclick = async () => {
     await Storage.markStatus(msgId, 'sent')
     updateRowStatus(msgId, 'sent')
   }
+  // If the recipient is offline, nudge the server to push-wake them.
+  maybeWake(currentPeerId)
 }
 
 /* =================================== file send =================================== */
@@ -1334,6 +2011,8 @@ async function sendFile(file) {
   client.sendFileEnd(peerId, fileId, msgId)
   await Storage.markStatus(msgId, 'sent')
   updateRowStatus(msgId, 'sent')
+  // If the recipient is offline, nudge the server to push-wake them.
+  maybeWake(currentPeerId)
 }
 
 function makeThumb(file) {
@@ -1384,9 +2063,8 @@ async function flushOutboxFor(peerIdHex) {
     }
   }
 }
-$('text-input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('send-text').click() }
-})
+// Enter inserts a newline (textarea default); sending is ONLY via the send
+// button — per Leo's explicit preference. Deliberately no Enter-to-send.
 
 /* =================================== stats overlay =================================== */
 
@@ -1422,10 +2100,84 @@ function hexU8(hex) {
   return new Uint8Array(m.map(b => parseInt(b, 16)))
 }
 
+/* =================================== draggable PiP =================================== */
+
+// Make the local mini-preview (#my-video) draggable inside the video stage so
+// it can be moved off the remote person's face. Pointer Events cover both
+// touch and mouse. Position is kept in JS for the session (not persisted).
+function initDraggablePip() {
+  const pip = $('my-video')
+  const stage = document.querySelector('.video-stage')
+  if (!pip || !stage) return
+
+  const DRAG_THRESHOLD = 5  // px; below this it's a tap, not a drag
+  let dragging = false
+  let moved = false
+  let startX = 0, startY = 0          // pointer position at pointerdown
+  let baseLeft = 0, baseTop = 0       // pip top-left at pointerdown (stage-relative)
+  let activePointer = null
+
+  const clamp = (v, min, max) => Math.max(min, Math.min(max, v))
+
+  // Convert the current right/bottom anchoring to left/top so we can move it
+  // freely. Coordinates are relative to the stage's content box.
+  function switchToLeftTop() {
+    const s = stage.getBoundingClientRect()
+    const p = pip.getBoundingClientRect()
+    const left = p.left - s.left
+    const top  = p.top  - s.top
+    pip.style.left = left + 'px'
+    pip.style.top  = top + 'px'
+    pip.style.right = 'auto'
+    pip.style.bottom = 'auto'
+    return { left, top }
+  }
+
+  pip.addEventListener('pointerdown', (e) => {
+    // Establish a left/top baseline (handles the initial right/bottom anchor
+    // and re-anchors after the stage was re-shown / resized).
+    const pos = switchToLeftTop()
+    baseLeft = pos.left
+    baseTop  = pos.top
+    startX = e.clientX
+    startY = e.clientY
+    dragging = true
+    moved = false
+    activePointer = e.pointerId
+    pip.setPointerCapture(e.pointerId)
+  })
+
+  pip.addEventListener('pointermove', (e) => {
+    if (!dragging || e.pointerId !== activePointer) return
+    const dx = e.clientX - startX
+    const dy = e.clientY - startY
+    if (!moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return  // still a tap
+    moved = true
+    pip.classList.add('dragging')
+    const s = stage.getBoundingClientRect()
+    const maxLeft = s.width  - pip.offsetWidth
+    const maxTop  = s.height - pip.offsetHeight
+    pip.style.left = clamp(baseLeft + dx, 0, Math.max(0, maxLeft)) + 'px'
+    pip.style.top  = clamp(baseTop  + dy, 0, Math.max(0, maxTop))  + 'px'
+    e.preventDefault()
+  })
+
+  const endDrag = (e) => {
+    if (!dragging || (activePointer !== null && e.pointerId !== activePointer)) return
+    dragging = false
+    activePointer = null
+    pip.classList.remove('dragging')
+    try { pip.releasePointerCapture(e.pointerId) } catch {}
+  }
+  pip.addEventListener('pointerup', endDrag)
+  pip.addEventListener('pointercancel', endDrag)
+}
+
 /* =================================== settings dialog =================================== */
 
 $('btn-settings').onclick = () => {
   $('my-invite').value   = buildInviteUrl(client.qrText(nickname || ''))
+  $('my-name-input').value = nickname || ''
   $('my-id-line').textContent = `id: ${u8hex(client.myId)}`
   // Populate server config fields (saved value, else current default).
   const c = serverConfig()
@@ -1435,6 +2187,17 @@ $('btn-settings').onclick = () => {
   $('dialog-settings').hidden = false
 }
 $('settings-close').onclick = () => { $('dialog-settings').hidden = true }
+// Change own display name. New contacts get it via INTRODUCE; existing contacts
+// keep whatever label they already saved for us.
+$('my-name-save').onclick = () => {
+  const v = $('my-name-input').value.trim()
+  if (!v) { toast('Name cannot be empty'); return }
+  nickname = v
+  saveNickname(v)
+  $('my-nickname').textContent = v
+  $('my-invite').value = buildInviteUrl(client.qrText(nickname))
+  toast('Name updated')
+}
 $('cfg-save').onclick = () => {
   const url = $('cfg-ws-url').value.trim()
   const xp  = $('cfg-srv-xpub').value.trim().toLowerCase()
@@ -1515,3 +2278,8 @@ $('wipe-id').onclick = async () => {
   savePeers({})
   location.reload()
 }
+
+/* =================================== final wiring =================================== */
+
+// Make the local mini-preview draggable within the video stage.
+initDraggablePip()

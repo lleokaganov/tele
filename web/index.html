@@ -75,6 +75,7 @@
         <span id="call-peer-online" class="dot dot-off"></span>
       </div>
       <span class="muted" id="call-state">idle</span>
+      <button id="btn-search" class="iconbtn" title="search history">🔍</button>
       <button id="btn-clear-history" class="iconbtn" title="clear history">🗑</button>
     </header>
 
@@ -98,9 +99,16 @@
         <option value="480" selected>480p</option>
         <option value="720">720p</option>
       </select>
+      <select id="cam-select" class="resolution-select" hidden></select>
+      <select id="mic-select" class="resolution-select" hidden></select>
     </div>
 
     <div class="chat-wrap">
+      <div id="search-bar" class="search-bar" hidden>
+        <input id="search-input" type="text" placeholder="Search messages" />
+        <span id="search-info" class="search-info"></span>
+        <button id="search-close" class="iconbtn" title="close search">✕</button>
+      </div>
       <div id="chat"></div>
       <div id="edit-banner" class="edit-banner" hidden>
         <span>✏️ Editing message</span>
@@ -109,7 +117,7 @@
       <div class="chat-input">
         <input id="file-input" type="file" hidden multiple />
         <button id="attach-btn" class="secondary" title="Attach file">📎</button>
-        <input id="text-input" type="text" placeholder="message" />
+        <textarea id="text-input" rows="1" placeholder="message"></textarea>
         <button id="send-text" class="primary">→</button>
       </div>
     </div>
@@ -143,6 +151,31 @@
     </div>
   </div>
 
+  <!-- ============================== DIALOG: rename contact ============================== -->
+  <div id="dialog-rename" class="dialog" hidden>
+    <div class="dialog-box">
+      <div class="dialog-title">Rename contact</div>
+      <label>Name</label>
+      <input id="rename-input" type="text" placeholder="e.g. Lena" />
+      <div class="dialog-buttons">
+        <button id="rename-cancel" class="secondary">Cancel</button>
+        <button id="rename-save"   class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================== DIALOG: delete contact ============================== -->
+  <div id="dialog-delete-contact" class="dialog" hidden>
+    <div class="dialog-box">
+      <div class="dialog-title">Delete contact?</div>
+      <div id="delete-contact-text" class="dialog-text">Delete contact and all messages &amp; files? This cannot be undone.</div>
+      <div class="dialog-buttons">
+        <button id="delete-contact-cancel" class="secondary">Cancel</button>
+        <button id="delete-contact-confirm" class="danger">Delete</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ============================== DIALOG: incoming call ============================== -->
   <div id="dialog-incoming" class="dialog" hidden>
     <div class="dialog-box">
@@ -159,6 +192,11 @@
   <div id="dialog-settings" class="dialog" hidden>
     <div class="dialog-box">
       <div class="dialog-title">Settings</div>
+      <label>My name</label>
+      <div class="dialog-buttons" style="justify-content:flex-start;flex-wrap:wrap">
+        <input id="my-name-input" type="text" maxlength="40" placeholder="your name" style="flex:1;min-width:0" />
+        <button id="my-name-save" class="secondary">Save</button>
+      </div>
       <label>My invite link (share with a friend)</label>
       <input id="my-invite" type="text" readonly />
       <div class="dialog-buttons" style="justify-content:flex-start;flex-wrap:wrap">

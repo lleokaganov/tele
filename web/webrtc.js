@@ -159,6 +159,69 @@ export class CallManager {
     await v.setSinkId(deviceId)
   }
 
+  /** Enumerate available capture devices. Labels are only populated once a
+   *  permission grant / getUserMedia has happened — by the time a call is
+   *  active that's always true, so the picker shows readable names. */
+  async listDevices() {
+    let devs = []
+    try { devs = await navigator.mediaDevices.enumerateDevices() }
+    catch (e) { this.ui.log(`x enumerateDevices: ${e}`); return { audioInputs: [], videoInputs: [] } }
+    const audioInputs = devs.filter(d => d.kind === 'audioinput')
+                            .map(d => ({ deviceId: d.deviceId, label: d.label }))
+    const videoInputs = devs.filter(d => d.kind === 'videoinput')
+                            .map(d => ({ deviceId: d.deviceId, label: d.label }))
+    return { audioInputs, videoInputs }
+  }
+
+  /** Switch to a specific camera by deviceId. Replaces the video track in
+   *  the existing RTCPeerConnection so the call is not interrupted. */
+  async setVideoInput(deviceId) {
+    if (!this.localStream) return
+    const old = this.localStream.getVideoTracks()[0]
+    let next = null
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: deviceId } },
+        audio: false,
+      })
+      next = s.getVideoTracks()[0]
+    } catch (e) {
+      this.ui.log(`x setVideoInput: ${e}`); return
+    }
+    old?.stop()
+    if (old) this.localStream.removeTrack(old)
+    this.localStream.addTrack(next)
+    if (this.pc) {
+      const sender = this.pc.getSenders().find(s => s.track && s.track.kind === 'video')
+      if (sender) await sender.replaceTrack(next)
+    }
+    this.ui.onLocalStream(this.localStream)
+  }
+
+  /** Switch to a specific microphone by deviceId. Replaces the audio track
+   *  in the existing RTCPeerConnection so the call is not interrupted. */
+  async setAudioInput(deviceId) {
+    if (!this.localStream) return
+    const old = this.localStream.getAudioTracks()[0]
+    let next = null
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({
+        audio: { deviceId: { exact: deviceId } },
+        video: false,
+      })
+      next = s.getAudioTracks()[0]
+    } catch (e) {
+      this.ui.log(`x setAudioInput: ${e}`); return
+    }
+    old?.stop()
+    if (old) this.localStream.removeTrack(old)
+    this.localStream.addTrack(next)
+    if (this.pc) {
+      const sender = this.pc.getSenders().find(s => s.track && s.track.kind === 'audio')
+      if (sender) await sender.replaceTrack(next)
+    }
+  }
+
   /** Toggle between front and back camera. Replaces the video track in
    *  the existing RTCPeerConnection so the call is not interrupted. */
   async switchCamera() {

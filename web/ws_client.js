@@ -34,6 +34,8 @@ export const CMD = {
   PEER_OFFLINE:    0x43,
   INTRODUCE:       0x46,
   INTRO_FROM:      0x47,
+  WAKE:            0x48,
+  PUSH_REGISTER:   0x49,
   DELIVERY_ACK:    0x27,
   FILE_OFFER:      0x24,
   FILE_CHUNK:      0x25,
@@ -301,6 +303,28 @@ export class WsClient {
     const frame = this.session.buildIntroduce(targetId, nickname || '', this._nextMsgId())
     this.ws.send(frame)
     return true
+  }
+
+  /** Register a push token with the server so it can wake us when offline.
+   *  Wire = [kind:1][token utf-8 bytes]. kind 2 = Web Push; token is the
+   *  JSON.stringify(subscription.toJSON()) of a PushSubscription. */
+  sendPushRegister(kind, tokenStr) {
+    const tok = new TextEncoder().encode(tokenStr)
+    const body = new Uint8Array(1 + tok.length)
+    body[0] = kind & 0xff
+    body.set(tok, 1)
+    return this._sendServer(CMD.PUSH_REGISTER, body)
+  }
+
+  /** Ask the server to push-wake an offline recipient. Wire =
+   *  [target:8][type:1]: target is the first 8 bytes of the recipient's
+   *  X25519 public key (their ClientId); type 1 = incoming call (ringtone),
+   *  0 = message. */
+  sendWake(targetId, isCall = false) {
+    const body = new Uint8Array(9)
+    body.set(asU8(targetId).slice(0, 8), 0)
+    body[8] = isCall ? 1 : 0
+    return this._sendServer(CMD.WAKE, body)
   }
 
   _sendPeer(peerId, cmd, body) {

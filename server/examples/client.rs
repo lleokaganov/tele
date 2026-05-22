@@ -34,8 +34,6 @@ const PROTOCOL_VERSION: u8 = 2;
 const CMD_HANDSHAKE_REQUEST: u8 = 0x01;
 const CMD_HANDSHAKE_OK: u8 = 0x02;
 const CMD_TEXT: u8 = 0x20;
-const CMD_WAKE: u8 = 0x48;
-const CMD_PUSH_REGISTER: u8 = 0x49;
 const CMD_ERROR: u8 = 0xFF;
 
 #[derive(Clone)]
@@ -211,47 +209,6 @@ async fn run(mode: &str, peer_x_hex: Option<String>, peer_ed_hex: Option<String>
         panic!("handshake rejected, cmd=0x{:02x} body={:?}", cmd, &inner[3..]);
     }
     println!("handshake OK (server version 0x{:02x})", inner[3]);
-
-    // Server-bound test commands for the notifier path.
-    let send_server_bound = |ws_frame_cmd: u8, body: Vec<u8>| -> Vec<u8> {
-        let inner = pack_inner(1, ws_frame_cmd, &body);
-        let packet = encrypt_and_sign(&inner, &me.x_priv, &me.ed, &SERVER_X_PUB);
-        let nonce_24: [u8; 24] = packet[..24].try_into().unwrap();
-        let mut header = [0u8; 8];
-        xor_header(&k_c2s, &nonce_24, &mut header);
-        let mut frame = Vec::with_capacity(8 + packet.len());
-        frame.extend_from_slice(&header);
-        frame.extend_from_slice(&packet);
-        frame
-    };
-
-    if mode == "register" {
-        // register <token> — PUSH_REGISTER with kind=1 (FCM available).
-        let token = peer_x_hex.clone().expect("usage: register <token>");
-        let mut body = vec![1u8]; // kind = FCM
-        body.extend_from_slice(token.as_bytes());
-        ws.send(Message::Binary(send_server_bound(CMD_PUSH_REGISTER, body)))
-            .await
-            .unwrap();
-        println!("→ PUSH_REGISTER id={} token={}", hex::encode(me.id), token);
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let _ = ws.close(None).await;
-        return;
-    }
-
-    if mode == "wake" {
-        // wake <target_id_hex>
-        let target_hex = peer_x_hex.clone().expect("usage: wake <target_id_hex>");
-        let target = hex::decode(target_hex).expect("target id hex");
-        assert!(target.len() >= 8, "target id must be 8 bytes");
-        ws.send(Message::Binary(send_server_bound(CMD_WAKE, target[..8].to_vec())))
-            .await
-            .unwrap();
-        println!("→ WAKE target={}", hex::encode(&target[..8]));
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let _ = ws.close(None).await;
-        return;
-    }
 
     if mode == "bob" {
         let peer_x: [u8; 32] = hex::decode(peer_x_hex.expect("peer x_pub hex"))
