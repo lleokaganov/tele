@@ -1627,6 +1627,61 @@ function autoGrowInput() {
 }
 $('text-input').addEventListener('input', autoGrowInput)
 
+// --- Floating "Copy" button for partial text selection ---------------------
+// WebView's native selection ActionMode (the system Copy bar) is unreliable, so
+// when the user selects a chunk of message text we pop our own Copy button
+// above the selection. Lets people grab a link / phone / address out of a bubble.
+let _selCopyBtn = null
+function _ensureSelCopyBtn() {
+  if (_selCopyBtn) return _selCopyBtn
+  const b = document.createElement('button')
+  b.className = 'sel-copy-btn'
+  b.textContent = '📋 Copy'
+  b.style.display = 'none'
+  // Don't let the press clear the selection before the click handler runs.
+  b.addEventListener('mousedown', (e) => e.preventDefault())
+  b.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false })
+  b.addEventListener('click', async () => {
+    const t = (window.getSelection() || '').toString()
+    if (t && t.trim()) {
+      try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(t)
+        else document.execCommand('copy')
+        toast('Copied')
+      } catch (e) { console.warn('copy failed', e); toast('Copy failed') }
+    }
+    b.style.display = 'none'
+    window.getSelection()?.removeAllRanges?.()
+  })
+  document.body.appendChild(b)
+  _selCopyBtn = b
+  return b
+}
+function _updateSelCopyBtn() {
+  const sel = window.getSelection()
+  const b = _ensureSelCopyBtn()
+  const txt = sel ? sel.toString() : ''
+  if (!txt || !txt.trim() || sel.rangeCount === 0) { b.style.display = 'none'; return }
+  // Only when the selection sits inside chat message text.
+  const node = sel.anchorNode
+  const host = node && (node.nodeType === 1 ? node : node.parentElement)
+  if (!host || !host.closest || !host.closest('.msg-text')) { b.style.display = 'none'; return }
+  const rect = sel.getRangeAt(0).getBoundingClientRect()
+  if (!rect || (rect.width === 0 && rect.height === 0)) { b.style.display = 'none'; return }
+  b.style.display = 'block'
+  b.style.left = (rect.left + rect.width / 2) + 'px'
+  let top = rect.top - 42
+  if (top < 6) top = rect.bottom + 8   // flip below if no room above
+  b.style.top = top + 'px'
+}
+document.addEventListener('selectionchange', () => {
+  clearTimeout(_updateSelCopyBtn._t)            // selectionchange fires rapidly while dragging
+  _updateSelCopyBtn._t = setTimeout(_updateSelCopyBtn, 120)
+})
+document.addEventListener('scroll', () => {     // position would go stale on scroll
+  if (_selCopyBtn) _selCopyBtn.style.display = 'none'
+}, true)
+
 function openDeleteDialog(msgId, isOut) {
   closeMsgMenu()
   const overlay = document.createElement('div')

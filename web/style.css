@@ -219,6 +219,18 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   overflow-wrap: anywhere;      /* break very long words/URLs instead of overflowing */
 }
 
+/* Floating "Copy" button shown above a text selection. WebView often fails to
+ * raise the native selection ActionMode, so we provide our own. */
+.sel-copy-btn {
+  position: fixed; z-index: 1000;
+  transform: translate(-50%, 0);
+  background: #2aa7a0; color: #fff;
+  border: none; border-radius: 6px;
+  padding: .35rem .7rem; font: inherit; font-size: .85rem;
+  box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  cursor: pointer;
+}
+
 /* Per-message actions handle (⋮). */
 .msg-actions {
   background: transparent; border: 0; padding: 0 .1rem; margin: 0;
