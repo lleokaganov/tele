@@ -463,7 +463,9 @@ html[data-theme="dark"] .msg.me    { background: rgba(255,98,0,.14); }
 /* ============================== dialogs ============================== */
 
 .dialog {
-  position: fixed; inset: 0; z-index: 10;
+  /* Above lui windows/confirms (which sit at 500–950): a modal dialog is always
+     the newest, topmost layer — e.g. the password prompt over the settings window. */
+  position: fixed; inset: 0; z-index: 1000;
   background: rgba(28,26,24,.5);
   display: none; align-items: center; justify-content: center;
   padding: 1rem;
