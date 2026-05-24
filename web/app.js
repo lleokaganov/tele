@@ -336,7 +336,7 @@ function openContactMenu(idHex, x, y) {
   }
   item(t('rename'), () => openRenameDialog(idHex))
   item(t('clear_chat'), () => clearContactChat(idHex))
-  item(isBanned(idHex) ? t('unban') : t('ban'), () => toggleBanContact(idHex))
+  item(t('ban'), () => banContact(idHex), 'danger')
   item(t('del_contact'), () => openDeleteContactDialog(idHex), 'danger')
 
   document.body.appendChild(menu)
@@ -428,13 +428,6 @@ function clearContactChat(idHex) {
   })
 }
 
-// Toggle a contact's ban state. Banned peers stay in the list but their
-// incoming messages/calls/files are silently ignored (see CallManager callbacks).
-function toggleBanContact(idHex) {
-  setBanned(idHex, !isBanned(idHex))
-  renderContacts()
-}
-
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]))
 }
@@ -469,6 +462,9 @@ function handleIntroFrom(body) {
   let idU8
   try { idU8 = client.addPeer(x_pub, ed_pub) } catch (e) { console.warn('intro', e); return }
   const idHex = u8hex(idU8)
+  // A blacklisted peer introducing itself again must NOT be re-added to the
+  // contact list — drop the intro before it touches peerBook.
+  if (isBanned(idHex)) return
   const wasNew = !peerBook[idHex]
   // Preserve any local nickname if the user already named this peer; only
   // adopt the introduced nickname for fresh entries.
@@ -2633,17 +2629,104 @@ function chatsPersistEnabled() {
 }
 
 // ── Block list ─────────────────────────────────────────────────────────────────
-// Banned peers (by idHex). localStorage 'telefon_banned' = JSON array of idHex.
-// Incoming text/calls/files from a banned peer are silently ignored.
-function loadBanned() {
-  try { return new Set(JSON.parse(localStorage.getItem('telefon_banned') || '[]')) }
-  catch { return new Set() }
+// Blacklist of banned peers. localStorage 'telefon_banned' = JSON array of
+// objects { id, qr, label } so a banned contact can be fully restored later.
+// A banned peer is removed from the contact list entirely: their incoming
+// text/calls/files are ignored, their chat is wiped, and a fresh INTRO_FROM
+// from them does NOT re-create the contact (see handleIntroFrom).
+function loadBlacklist() {
+  try {
+    const raw = JSON.parse(localStorage.getItem('telefon_banned') || '[]')
+    // Migrate the legacy format (a bare array of idHex strings) to objects.
+    return raw.map(e => (typeof e === 'string' ? { id: e, qr: null, label: null } : e))
+              .filter(e => e && e.id)
+  } catch { return [] }
 }
-const banned = loadBanned()
-function isBanned(idHex) { return banned.has(idHex) }
-function setBanned(idHex, on) {
-  if (on) banned.add(idHex); else banned.delete(idHex)
-  try { localStorage.setItem('telefon_banned', JSON.stringify([...banned])) } catch {}
+function saveBlacklist(arr) {
+  try { localStorage.setItem('telefon_banned', JSON.stringify(arr)) } catch {}
+}
+let blacklist = loadBlacklist()
+function isBanned(idHex) { return blacklist.some(e => e.id === idHex) }
+
+// Ban a contact: confirm, then wipe its chat, drop it from the list and the
+// WASM session, and record { id, qr, label } in the blacklist for later restore.
+function banContact(idHex) {
+  const p = peerBook[idHex]
+  const name = p?.label || idHex.slice(0, 8)
+  window.lui.confirm({
+    icon: '🚫', title: t('ban'), text: t('ban_warn'),
+    danger: true, ok: t('ban'), cancel: t('cancel'),
+  }, async () => {
+    // Remember enough to restore the contact if it's later unblocked.
+    if (!isBanned(idHex)) {
+      blacklist.push({ id: idHex, qr: p?.qr || null, label: p?.label || null })
+      saveBlacklist(blacklist)
+    }
+    // Wipe the conversation immediately and remove the contact entirely.
+    try { await Storage.clearHistory(idHex) } catch (e) { console.warn('clearHistory', e) }
+    clearUnread(idHex)
+    delete peerBook[idHex]
+    persist()
+    try { client.removePeer(hexU8(idHex)) } catch (e) { console.warn('removePeer', e) }
+    // If we're looking at this contact's chat, drop back to the list.
+    if (currentPeerId === idHex) {
+      try { call.hangup() } catch {}
+      currentPeerId = null
+      showScreen('contacts')
+      if (history.state?.screen === 'call') history.back()
+    }
+    renderContacts()
+    toast(t('deleted', { name }), 'success')
+  })
+}
+
+// Unblock a peer: remove it from the blacklist and restore it as a contact
+// from the saved { qr, label } so it reappears in the main list.
+function unbanContact(idHex) {
+  const entry = blacklist.find(e => e.id === idHex)
+  blacklist = blacklist.filter(e => e.id !== idHex)
+  saveBlacklist(blacklist)
+  if (entry && entry.qr) {
+    peerBook[idHex] = { qr: entry.qr, label: entry.label || null, online: false }
+    try { client.addPeerFromQr(entry.qr) } catch (e) { console.warn('restore peer', e) }
+    persist()
+    subscribeAll()
+  }
+  renderContacts()
+}
+
+// Blacklist window: list every banned contact with an Unblock button. Opened
+// from Settings. Unblocking restores the contact to the main list and removes
+// it here; the window re-renders in place (or shows the empty state).
+function openBlacklistWindow() {
+  const w = window.lui.win(t('blacklist_title'), '<div class="set-blacklist"></div>')
+  const box = w.querySelector('.set-blacklist')
+  const render = () => {
+    box.innerHTML = ''
+    if (blacklist.length === 0) {
+      const empty = document.createElement('div')
+      empty.className = 'muted'
+      empty.style.padding = '12px 0'
+      empty.textContent = t('blacklist_empty')
+      box.appendChild(empty)
+      return
+    }
+    for (const e of blacklist) {
+      const row = document.createElement('div')
+      row.className = 'set-line'
+      const label = document.createElement('span')
+      label.className = 'set-label'
+      label.textContent = e.label || e.id.slice(0, 8)
+      const btn = document.createElement('button')
+      btn.className = 'btn btn-ghost'
+      btn.textContent = t('unblock')
+      btn.onclick = () => { unbanContact(e.id); render() }
+      row.appendChild(label)
+      row.appendChild(btn)
+      box.appendChild(row)
+    }
+  }
+  render()
 }
 
 // Centered modal asking for a single password (shown as VISIBLE text — never a
@@ -2840,7 +2923,7 @@ function deleteAllChats() {
 function openSettings() {
   const lui = window.lui
   const invite   = buildInviteUrl(client.qrText(nickname || ''))
-  const idLine   = `id: ${u8hex(client.myId)}`
+  const shortId  = u8hex(client.myId).slice(0, 8)
   const themeNow = lui.theme()                 // 'auto' | 'light' | 'dark'
   const langNow  = lui.lang()                  // current language code
   const fxNow    = lui.setEffects()            // boolean
@@ -2851,14 +2934,72 @@ function openSettings() {
   const langOpts = Object.entries(LANG_NAMES)
     .map(([code, name]) => `<option value="${code}">${name}</option>`).join('')
 
+  // Unified layout: every single setting is one .set-line — label on the left,
+  // control/value on the right, a thin divider between rows. The invite block
+  // keeps its own heading+field (Leonid: "leave the invite construction as is").
+  // The account-management group stays a titled block (two grouped actions).
   const html = `
-    <div class="set-sec">
-      <h3>${escapeHtml(t('set_name'))}</h3>
-      <div class="set-row">
-        <span id="set-name-display" class="inline-edit" tabindex="0" role="button" title="${escapeHtml(t('tap_to_edit'))}"></span>
-        <input id="set-name" class="input" type="text" maxlength="40" placeholder="${escapeHtml(t('set_name_ph'))}" data-nopersist hidden />
-      </div>
-      <div id="set-id" class="set-id-mini" data-copy></div>
+    <div class="set-line">
+      <span class="set-label">${escapeHtml(t('set_name'))}</span>
+      <span id="set-name-display" class="inline-edit" tabindex="0" role="button" title="${escapeHtml(t('tap_to_edit'))}"></span>
+      <input id="set-name" class="input" type="text" maxlength="40" placeholder="${escapeHtml(t('set_name_ph'))}" data-nopersist hidden />
+    </div>
+
+    <div class="set-line">
+      <span class="set-label">${escapeHtml(t('set_lang'))}</span>
+      <span class="select">
+        <select id="set-lang" data-nopersist>${langOpts}</select>
+      </span>
+    </div>
+
+    <div class="set-line">
+      <span class="set-label">${escapeHtml(t('set_theme'))}</span>
+      <span class="select">
+        <select id="set-theme" data-nopersist>
+          <option value="auto">${escapeHtml(t('theme_auto'))}</option>
+          <option value="light">${escapeHtml(t('theme_light'))}</option>
+          <option value="dark">${escapeHtml(t('theme_dark'))}</option>
+        </select>
+      </span>
+    </div>
+
+    <div class="set-line">
+      <span class="set-label">${escapeHtml(t('set_effects'))}</span>
+      <label class="toggle">
+        <input id="set-fx" type="checkbox" data-nopersist />
+        <span class="track"></span>
+      </label>
+    </div>
+
+    <div class="set-line">
+      <span class="set-label">${escapeHtml(t('save_chats'))}</span>
+      <label class="toggle">
+        <input id="set-persist" type="checkbox" data-nopersist />
+        <span class="track"></span>
+      </label>
+    </div>
+
+    <div class="set-line" title="${escapeHtml(t('server_hint'))}">
+      <span class="set-label">${escapeHtml(t('set_server'))}</span>
+      <span id="set-url-display" class="inline-edit" tabindex="0" role="button" title="${escapeHtml(t('tap_to_edit'))}"></span>
+      <input id="set-url" class="input" type="text" data-nopersist hidden />
+    </div>
+
+    <div class="set-line">
+      <span class="set-label">${escapeHtml(t('update'))}</span>
+      <button id="set-update" class="btn btn-ghost">${escapeHtml(t('check_update'))}</button>
+    </div>
+    <div class="muted set-update-status" id="set-update-status"></div>
+
+    <div class="set-line">
+      <span class="set-label">${escapeHtml(t('account'))}</span>
+      <button id="set-acc-export" class="btn btn-ghost">${escapeHtml(t('acc_export'))}</button>
+      <button id="set-acc-import" class="btn btn-ghost">${escapeHtml(t('acc_import'))}</button>
+    </div>
+
+    <div class="set-line">
+      <span class="set-label">${escapeHtml(t('blacklist_open'))}</span>
+      <button id="set-blacklist" class="btn btn-ghost">${escapeHtml(t('open'))}</button>
     </div>
 
     <div class="set-sec">
@@ -2866,74 +3007,17 @@ function openSettings() {
       <input id="set-invite" class="input" type="text" data-copy data-nopersist />
     </div>
 
-    <div class="set-sec">
-      <h3>${escapeHtml(t('account'))}</h3>
-      <p class="muted" style="margin:4px 0 10px; line-height:1.4">${escapeHtml(t('acc_warn_export'))}</p>
-      <div class="set-row">
-        <button id="set-acc-export" class="btn btn-ghost">${escapeHtml(t('acc_export'))}</button>
-        <button id="set-acc-import" class="btn btn-ghost">${escapeHtml(t('acc_import'))}</button>
-      </div>
-    </div>
-
-    <div class="set-sec">
-      <div class="set-row" style="justify-content:space-between">
-        <span>${escapeHtml(t('set_theme'))}</span>
-        <span class="select">
-          <select id="set-theme" data-nopersist>
-            <option value="auto">${escapeHtml(t('theme_auto'))}</option>
-            <option value="light">${escapeHtml(t('theme_light'))}</option>
-            <option value="dark">${escapeHtml(t('theme_dark'))}</option>
-          </select>
-        </span>
-      </div>
-      <div class="set-row" style="justify-content:space-between; margin-top:12px">
-        <span>${escapeHtml(t('set_lang'))}</span>
-        <span class="select">
-          <select id="set-lang" data-nopersist>${langOpts}</select>
-        </span>
-      </div>
-      <div class="set-row" style="justify-content:space-between; margin-top:12px">
-        <span>${escapeHtml(t('set_effects'))}</span>
-        <label class="toggle">
-          <input id="set-fx" type="checkbox" data-nopersist />
-          <span class="track"></span>
-        </label>
-      </div>
-      <div class="set-row" style="justify-content:space-between; margin-top:12px">
-        <span>${escapeHtml(t('save_chats'))}</span>
-        <label class="toggle">
-          <input id="set-persist" type="checkbox" data-nopersist />
-          <span class="track"></span>
-        </label>
-      </div>
-    </div>
-
-    <div class="set-sec">
-      <h3>${escapeHtml(t('set_server'))}</h3>
-      <p class="muted" style="margin:4px 0 10px; line-height:1.4">${escapeHtml(t('server_hint'))}</p>
-      <div class="set-row">
-        <span id="set-url-display" class="inline-edit" tabindex="0" role="button" title="${escapeHtml(t('tap_to_edit'))}"></span>
-        <input id="set-url" class="input" type="text" data-nopersist hidden />
-      </div>
-    </div>
-
-    <div class="set-sec">
-      <div class="muted" id="set-update-status" style="margin:0 0 8px; line-height:1.4"></div>
-      <button id="set-update" class="btn btn-ghost">${escapeHtml(t('check_update'))}</button>
-    </div>
-
     <details class="set-sec set-danger">
-      <summary>${escapeHtml(t('danger_zone'))}</summary>
+      <summary>${escapeHtml(t('account_mgmt'))}</summary>
       <a id="set-del-chats" class="set-wipe-link" role="button" tabindex="0">${escapeHtml(t('del_all_chats'))}</a>
       <a id="set-wipe" class="set-wipe-link" role="button" tabindex="0">${escapeHtml(t('del_account'))}</a>
     </details>`
 
-  const w = lui.win(t('settings_title'), html)
+  const w = lui.win(`${t('settings_title')} · ${shortId}`, html)
   const q = (sel) => w.querySelector(sel)
 
   // Prefill values.
   q('#set-invite').value = invite
-  q('#set-id').textContent = idLine
   q('#set-theme').value  = themeNow
   q('#set-lang').value   = langNow
   q('#set-fx').checked   = !!fxNow
@@ -2975,13 +3059,13 @@ function openSettings() {
   }
   showNameText()
 
-  // ── Invite / contacts ── (invite copies on click via data-copy; id too)
-  q('#set-id').setAttribute('data-copy', u8hex(client.myId))   // copy clean hex, not "id: …"
-  // Export opens its own password dialog (empty = unencrypted). The export
-  // warning is already shown as a paragraph in the Account section above.
+  // ── Account ── (the id now rides in the window title; export shows a SECRET-keys
+  //    warning in its own confirm dialog, not inline here)
   q('#set-acc-export').onclick = () => { exportAccount() }
   // Import: pick the file first; #import-file.onchange routes to importAccountFile.
   q('#set-acc-import').onclick = () => $('import-file').click()
+  // ── Blocked contacts ── open the blacklist window.
+  q('#set-blacklist').onclick = () => openBlacklistWindow()
 
   // ── Appearance ──
   q('#set-theme').onchange = (e) => lui.theme(e.target.value)

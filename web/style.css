@@ -540,6 +540,24 @@ html[data-theme="dark"] .msg.me    { background: rgba(255,98,0,.14); }
 .win-body .set-sec { margin: 0 0 22px; }
 .win-body .set-sec:last-child { margin-bottom: 4px; }
 .win-body .set-sec > h3 { margin: 0 0 10px; }
+
+/* Unified setting row: label on the left, control(s)/value on the right, one
+   thin divider between rows. Same height as a toggle so the list reads evenly. */
+.win-body .set-line {
+  display: flex; align-items: center; gap: .75rem; min-height: 44px;
+  padding: .5rem 0; border-bottom: 1px solid var(--line);
+}
+.win-body .set-line:last-child { border-bottom: 0; }
+.win-body .set-line > .set-label { flex: 1; min-width: 0; color: var(--ink); }
+/* Compact buttons sized to about the toggle height (Leonid). */
+.win-body .set-line .btn { padding: .4em .8em; }
+/* Inline-edit value (name / server URL) sits on the right, not stretched. */
+.win-body .set-line > .inline-edit { flex: 0 1 auto; max-width: 60%; text-align: right; }
+.win-body .set-line > .input { flex: 1 1 auto; min-width: 0; }
+/* Update status line lives just under its row, indented slightly, compact. */
+.win-body .set-update-status { margin: -2px 0 6px; line-height: 1.3; min-height: 1em; }
+/* Blacklist window rows reuse .set-line; keep the list tight. */
+.win-body .set-blacklist { display: flex; flex-direction: column; }
 .win-body .set-row {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
 }
@@ -585,14 +603,5 @@ html[data-theme="dark"] .msg.me    { background: rgba(255,98,0,.14); }
   background: color-mix(in srgb, var(--danger) 12%, transparent);
   outline: none;
 }
-/* Two danger-zone actions stacked with breathing room. */
+/* Two account-management actions stacked with breathing room. */
 .win-body .set-danger > .set-wipe-link { display: block; width: fit-content; margin-top: 10px; }
-/* Owner id shown tiny under the name (copyable on tap). The #set-id element now
-   carries the .set-id-mini class; keep the id selector aligned so it wins on
-   specificity. */
-.win-body #set-id,
-.win-body .set-id-mini {
-  font-size: .72rem; color: var(--ink-soft);
-  font-family: ui-monospace, monospace;
-  margin-top: 2px; cursor: pointer;
-}
