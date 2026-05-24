@@ -389,7 +389,9 @@ html[data-theme="dark"] .msg.me    { background: rgba(255,98,0,.14); }
   padding: .55rem .8rem; border-radius: var(--r-sm); font-size: .9rem;
 }
 .msg-menu-item:hover { background: var(--bg-soft) }
-.msg-menu-item.danger { color: var(--danger) }
+/* Red TEXT on the normal menu background — override the global button.danger
+   red fill (higher specificity here), otherwise it's red-on-red (invisible). */
+.msg-menu-item.danger { color: var(--danger); background: transparent }
 
 .chat-input {
   display: flex; gap: .5rem; padding: .5rem .75rem;
