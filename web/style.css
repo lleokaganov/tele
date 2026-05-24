@@ -481,6 +481,9 @@ html[data-theme="dark"] .msg.me    { background: rgba(255,98,0,.14); }
 .dialog-text  { color: var(--ink-soft); font-size: .9rem }
 .dialog-box label { font-size: .8rem; color: var(--ink-soft); margin-top: .25rem }
 .dialog-error { background: var(--danger); color: #fff; padding: .5rem .75rem; border-radius: var(--r-sm); font-size: .85rem }
+/* Device-picker list inside a .dialog (camera/mic/speaker choice). */
+.dev-list { display: flex; flex-direction: column; gap: 2px; margin: .5rem 0; max-height: 50vh; overflow-y: auto; }
+.dev-list .msg-menu-item { white-space: normal; word-break: break-word; }
 .dialog-buttons {
   display: flex; gap: .5rem; justify-content: flex-end; margin-top: .75rem;
 }

@@ -2181,58 +2181,59 @@ $('res-select').onchange = () => {
 /* Camera / microphone pickers — appear during a call when more than one
  * device of a kind is present. Switching replaces the corresponding track
  * in the live RTCPeerConnection without renegotiating. */
+// Device pickers. Device names can be long, so the call-control row shows only
+// ICONS; tapping one opens a list window (.dialog → above the call window). Each
+// icon is shown only when there's more than one device of that kind.
+let curCamId = null, curMicId = null, curSpkId = null
+
 async function populateDeviceSelectors() {
   let devs
   try { devs = await call.listDevices() } catch { return }
-  fillDeviceSelect($('cam-select'), devs.videoInputs, t('dev_camera'))
-  fillDeviceSelect($('mic-select'), devs.audioInputs, t('dev_mic'))
+  $('cam-pick').hidden = (devs.videoInputs?.length || 0) < 2
+  $('mic-pick').hidden = (devs.audioInputs?.length || 0) < 2
+  let outs = 0
+  try { outs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audiooutput').length } catch {}
+  $('speaker-btn').hidden = outs < 2
 }
 
-function fillDeviceSelect(sel, list, kindLabel) {
-  const prev = sel.value
-  sel.innerHTML = ''
-  list.forEach((d, i) => {
-    const opt = document.createElement('option')
-    opt.value = d.deviceId
-    opt.textContent = d.label || `${kindLabel} ${i + 1}`
-    sel.appendChild(opt)
+// Generic device-choice modal: lists devices (current one ticked); tap one to
+// apply + close. Uses .dialog so it sits above the call window.
+function openDevicePicker(title, devices, currentId, apply) {
+  if (!devices.length) return
+  const overlay = document.createElement('div'); overlay.className = 'dialog'
+  const box = document.createElement('div'); box.className = 'dialog-box'
+  const ttl = document.createElement('div'); ttl.className = 'dialog-title'; ttl.textContent = title
+  const list = document.createElement('div'); list.className = 'dev-list'
+  devices.forEach((d, i) => {
+    const b = document.createElement('button'); b.className = 'msg-menu-item'
+    b.textContent = (d.deviceId === currentId ? '✓ ' : '') + (d.label || `${title} ${i + 1}`)
+    b.onclick = () => { overlay.remove(); apply(d.deviceId) }
+    list.appendChild(b)
   })
-  // Restore the previous selection if it still exists in the new list.
-  if (list.some(d => d.deviceId === prev)) sel.value = prev
-  // A single (or zero) device makes the picker pointless — hide it.
-  sel.hidden = list.length < 2
+  const btns = document.createElement('div'); btns.className = 'dialog-buttons'
+  const cancel = document.createElement('button'); cancel.className = 'secondary'; cancel.textContent = t('cancel')
+  cancel.onclick = () => overlay.remove()
+  btns.appendChild(cancel)
+  box.append(ttl, list, btns); overlay.appendChild(box)
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove() }
+  document.body.appendChild(overlay)
 }
 
-$('cam-select').onchange = () => {
-  call.setVideoInput($('cam-select').value)
+$('cam-pick').onclick = async () => {
+  let devs; try { devs = await call.listDevices() } catch { return }
+  openDevicePicker(t('dev_camera'), devs.videoInputs || [], curCamId, (id) => { curCamId = id; call.setVideoInput(id) })
 }
-$('mic-select').onchange = () => {
-  call.setAudioInput($('mic-select').value)
+$('mic-pick').onclick = async () => {
+  let devs; try { devs = await call.listDevices() } catch { return }
+  openDevicePicker(t('dev_mic'), devs.audioInputs || [], curMicId, (id) => { curMicId = id; call.setAudioInput(id) })
 }
-
-/* speaker toggle — earpiece vs loudspeaker (where the browser exposes
- *  setSinkId on media elements). We probe device list once on first
- *  click and cycle through the available audiooutputs. */
-let speakerCycle = null
-let speakerIdx = 0
 $('speaker-btn').onclick = async () => {
-  try {
-    if (!speakerCycle) {
-      const devs = await navigator.mediaDevices.enumerateDevices()
-      speakerCycle = devs.filter(d => d.kind === 'audiooutput')
-      if (speakerCycle.length === 0) { toast(t('no_audio_outputs'), 'error'); return }
-    }
-    speakerIdx = (speakerIdx + 1) % speakerCycle.length
-    const dev = speakerCycle[speakerIdx]
-    await call.setAudioSink(dev.deviceId)
-    const labelGuess = /speaker|loudspeaker/i.test(dev.label) ? '🔊 ' + t('spk_loud')
-                     : /earpiece|receiver/i.test(dev.label)   ? '🎧 ' + t('spk_earpiece')
-                     : '🔊 ' + (dev.label || t('spk_output'))
-    $('speaker-btn').textContent = labelGuess
-    toast(dev.label || dev.deviceId, 'success')
-  } catch (e) {
-    toast(t('audio_sink_err', { err: e.message }), 'error')
-  }
+  let outs = []
+  try { outs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audiooutput') } catch {}
+  if (!outs.length) { toast(t('no_audio_outputs'), 'error'); return }
+  openDevicePicker(t('dev_speaker'), outs, curSpkId, async (id) => {
+    try { await call.setAudioSink(id); curSpkId = id } catch (e) { toast(t('audio_sink_err', { err: e.message }), 'error') }
+  })
 }
 $('send-text').onclick = async () => {
   if (!currentPeerId) return

@@ -215,15 +215,17 @@
       <button id="mute-btn"   class="btn btn-ghost" data-i18n="mic">🔇 Mic</button>
       <button id="video-btn"  class="btn btn-ghost" data-i18n="video">🎥 Video</button>
       <button id="switch-cam" class="btn btn-ghost" data-i18n="camera">↻ Camera</button>
-      <button id="speaker-btn" class="btn btn-ghost">🔊</button>
+      <!-- Device pickers: icon only (no device names in the row — they'd blow it up
+           on desktop). Each opens a list window. Shown only when >1 device exists. -->
+      <button id="cam-pick"   class="btn btn-ghost" hidden data-i18n-title="dev_camera" data-i18n-aria="dev_camera" title="Camera">📷</button>
+      <button id="mic-pick"   class="btn btn-ghost" hidden data-i18n-title="dev_mic"    data-i18n-aria="dev_mic"    title="Microphone">🎙️</button>
+      <button id="speaker-btn" class="btn btn-ghost" hidden data-i18n-title="dev_speaker" data-i18n-aria="dev_speaker" title="Speaker">🔊</button>
       <select id="res-select" class="resolution-select">
         <option value="240">240p</option>
         <option value="360">360p</option>
         <option value="480" selected>480p</option>
         <option value="720">720p</option>
       </select>
-      <select id="cam-select" class="resolution-select" hidden></select>
-      <select id="mic-select" class="resolution-select" hidden></select>
     </div>
     <!-- Shown only while minimized: a direct hang-up so you can always stop a
          call without expanding first. -->
