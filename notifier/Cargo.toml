@@ -45,3 +45,8 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
+
+# Cross-build (Pi arm64 musl): vendor OpenSSL so it links statically without a
+# target sysroot. Behaviour-neutral; web-push stays as on prod.
+[target.aarch64-unknown-linux-musl.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
