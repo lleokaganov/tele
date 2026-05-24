@@ -502,7 +502,8 @@ window.addEventListener('popstate', (e) => {
   // call screen (e.g. we closed a lightbox sitting on top of a call),
   // do nothing — leave the call running.
   if ($('screen-call').classList.contains('active') && !e.state?.screen) {
-    call.hangup()
+    // Back gesture leaves the chat for the contacts list; an active call keeps
+    // running in its floating window (no hangup here).
     currentPeerId = null
     showScreen('contacts')
   }
@@ -519,8 +520,12 @@ window.addEventListener('popstate', (e) => {
     const topWin = document.querySelector('.win')
     if (topWin && window.lui) { window.lui.closeWin(topWin); return }
     if (!$('lightbox').hidden) { closeLightbox(); return }
+    // An expanded call window: back minimizes it (does NOT hang up). A
+    // minimized window is left alone so back falls through to screen handling.
+    const cw = $('call-window')
+    if (!cw.hidden && !cw.classList.contains('mini')) { minimizeCall(); return }
     if ($('screen-call').classList.contains('active')) {
-      call.hangup()
+      // Leave the chat for contacts; an active call keeps running (no hangup).
       currentPeerId = null
       showScreen('contacts')
       return
@@ -578,23 +583,44 @@ function refreshCallHeader() {
 
 // (defined below as async — older sync stub no longer used)
 
+// Show/hide the floating call window expanded.
+function clearWinInline(w) {
+  // Wipe inline left/top/right/bottom left over from mini-window dragging so
+  // the expanded CSS layout (inset / centering) governs again.
+  w.style.left = w.style.top = w.style.right = w.style.bottom = ''
+}
+function showCallWindow() {
+  const w = $('call-window')
+  w.hidden = false
+  w.classList.remove('mini')   // always open expanded
+  clearWinInline(w)
+}
+function hideCallWindow() {
+  const w = $('call-window')
+  w.hidden = true
+  w.classList.remove('mini')
+  clearWinInline(w)
+}
+function minimizeCall() { $('call-window').classList.add('mini') }
+function expandCall() {
+  const w = $('call-window')
+  w.classList.remove('mini')
+  clearWinInline(w)
+}
+
 function resetCallButtons(state) {
   const inCall = state === 'connecting' || state === 'connected'
-  // Без активного звонка чат занимает весь экран; во время звонка видео
-  // забирает место, а чат становится компактной нижней панелью.
-  $('screen-call').classList.toggle('calling', inCall)
-  $('call-btn').hidden    = inCall
-  $('hangup-btn').hidden  = !inCall
-  $('switch-cam').hidden  = !inCall
-  $('mute-btn').hidden    = !inCall
-  $('video-btn').hidden   = !inCall
-  $('speaker-btn').hidden = !inCall
-  $('res-select').hidden  = !inCall
-  // Device pickers follow the same lifecycle; populateDeviceSelectors() may
-  // still re-hide them afterwards if only one device of a kind exists.
-  $('cam-select').hidden  = !inCall
-  $('mic-select').hidden  = !inCall
-  $('call-state').textContent = state
+  // The call now lives in its own floating window: showing/hiding the window
+  // is the whole UI lifecycle. Control buttons stay mounted inside it.
+  if (inCall) showCallWindow()
+  else        hideCallWindow()
+  // Hide the in-topbar "📞" call button while a call is up.
+  $('call-btn').hidden = inCall
+  // Window header: live state + peer name. The window can outlive currentPeerId
+  // (the user may navigate away during a call), so fall back gracefully.
+  $('cw-state').textContent = state
+  $('cw-peer').textContent  = (peerBook[currentPeerId]?.label)
+    || (currentPeerId ? currentPeerId.slice(0, 8) : '')
 }
 
 /* =================================== chat =================================== */
@@ -1036,7 +1062,9 @@ const call = new CallManager(client, {
   onLocalStream:  (s) => { $('my-video').srcObject = s   || null },
   onRemoteStream: (s) => { $('peer-video').srcObject = s || null },
   onState: (s) => {
-    if (currentPeerId) resetCallButtons(s)
+    // The call window is screen-independent — drive it from state directly,
+    // not from whether the matching chat is currently open.
+    resetCallButtons(s)
     if (s === 'connecting' || s === 'connected') {
       // Media is open by now, so device labels are available — fill the
       // camera / microphone pickers. Safe to call repeatedly.
@@ -1896,7 +1924,8 @@ $('search-input').addEventListener('keydown', (e) => {
 /* =================================== call-screen wiring =================================== */
 
 $('btn-back').onclick = () => {
-  call.hangup()
+  // Leaving the chat no longer ends the call — it keeps running in its own
+  // floating window. Just return to the contacts list.
   currentPeerId = null
   showScreen('contacts')
   // Pop our synthetic history entry so back/forward stays consistent.
@@ -1915,6 +1944,12 @@ $('call-btn').onclick = () => {
   maybeWake(currentPeerId, true)  // true = call → ringtone push
 }
 $('hangup-btn').onclick = () => call.hangup()
+
+/* Floating call-window chrome. Minimize collapses to a draggable PiP; close
+ * hangs up (onState→idle then hides the window via resetCallButtons). */
+$('cw-min').onclick   = minimizeCall
+$('cw-close').onclick = () => call.hangup()
+
 $('switch-cam').onclick = () => call.switchCamera()
 $('mute-btn').onclick   = () => {
   const muted = call.toggleMute()
@@ -2249,6 +2284,74 @@ function initDraggablePip() {
   pip.addEventListener('pointercancel', endDrag)
 }
 
+/* Drag the minimized call window around the viewport; a tap (no real movement)
+ * re-expands it. Only active while the window carries the `.mini` class — the
+ * expanded window is never draggable. Mirrors initDraggablePip's tap/drag
+ * threshold logic, but moves #call-window within the viewport (not the stage). */
+function initCallWindowDrag() {
+  const win = $('call-window')
+  if (!win) return
+
+  const DRAG_THRESHOLD = 5  // px; below this it's a tap, not a drag
+  let dragging = false
+  let moved = false
+  let startX = 0, startY = 0          // pointer position at pointerdown
+  let baseLeft = 0, baseTop = 0       // window top-left at pointerdown (viewport)
+  let activePointer = null
+
+  const clamp = (v, min, max) => Math.max(min, Math.min(max, v))
+
+  // Convert the current right/bottom anchoring to left/top so we can move it
+  // freely. Coordinates are viewport-relative.
+  function switchToLeftTop() {
+    const r = win.getBoundingClientRect()
+    win.style.left   = r.left + 'px'
+    win.style.top    = r.top  + 'px'
+    win.style.right  = 'auto'
+    win.style.bottom = 'auto'
+    return { left: r.left, top: r.top }
+  }
+
+  win.addEventListener('pointerdown', (e) => {
+    if (!win.classList.contains('mini')) return  // expanded window: not draggable
+    const pos = switchToLeftTop()
+    baseLeft = pos.left
+    baseTop  = pos.top
+    startX = e.clientX
+    startY = e.clientY
+    dragging = true
+    moved = false
+    activePointer = e.pointerId
+    win.setPointerCapture(e.pointerId)
+  })
+
+  win.addEventListener('pointermove', (e) => {
+    if (!dragging || e.pointerId !== activePointer) return
+    const dx = e.clientX - startX
+    const dy = e.clientY - startY
+    if (!moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return  // still a tap
+    moved = true
+    win.classList.add('dragging')
+    const maxLeft = window.innerWidth  - win.offsetWidth
+    const maxTop  = window.innerHeight - win.offsetHeight
+    win.style.left = clamp(baseLeft + dx, 0, Math.max(0, maxLeft)) + 'px'
+    win.style.top  = clamp(baseTop  + dy, 0, Math.max(0, maxTop))  + 'px'
+    e.preventDefault()
+  })
+
+  const endDrag = (e) => {
+    if (!dragging || (activePointer !== null && e.pointerId !== activePointer)) return
+    dragging = false
+    activePointer = null
+    win.classList.remove('dragging')
+    try { win.releasePointerCapture(e.pointerId) } catch {}
+    // No real movement while minimized → treat as a tap: re-expand.
+    if (!moved && win.classList.contains('mini')) expandCall()
+  }
+  win.addEventListener('pointerup', endDrag)
+  win.addEventListener('pointercancel', endDrag)
+}
+
 /* =================================== settings dialog =================================== */
 
 // ── Settings window (lui) ────────────────────────────────────────────────────
@@ -2504,3 +2607,5 @@ $('btn-settings').onclick = openSettings
 
 // Make the local mini-preview draggable within the video stage.
 initDraggablePip()
+// Make the minimized call window draggable across the viewport (tap = expand).
+initCallWindowDrag()

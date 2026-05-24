@@ -101,34 +101,10 @@
         <span id="call-peer-name">—</span>
         <span id="call-peer-online" class="dot dot-off"></span>
       </div>
-      <span class="muted" id="call-state">idle</span>
+      <button id="call-btn" class="iconbtn" title="call" aria-label="call">📞</button>
       <button id="btn-search" class="iconbtn" title="search history">🔍</button>
       <button id="btn-clear-history" class="iconbtn" title="clear history">🗑</button>
     </header>
-
-    <div class="video-stage">
-      <video id="peer-video" class="peer-video" autoplay        playsinline></video>
-      <video id="my-video"   class="my-video"   autoplay muted   playsinline></video>
-      <div id="stats-overlay" class="stats-overlay" hidden></div>
-      <button id="stats-toggle" class="stats-toggle" title="connection stats">ⓘ</button>
-    </div>
-
-    <div class="controls">
-      <button id="call-btn"   class="primary">📞 Call</button>
-      <button id="hangup-btn" class="danger" hidden>Hang up</button>
-      <button id="switch-cam" class="secondary" hidden>↻ Camera</button>
-      <button id="mute-btn"   class="secondary" hidden>🔇 Mic</button>
-      <button id="video-btn"  class="secondary" hidden>🎥 Video</button>
-      <button id="speaker-btn" class="secondary" hidden>🔊</button>
-      <select id="res-select" class="resolution-select" hidden>
-        <option value="240">240p</option>
-        <option value="360">360p</option>
-        <option value="480" selected>480p</option>
-        <option value="720">720p</option>
-      </select>
-      <select id="cam-select" class="resolution-select" hidden></select>
-      <select id="mic-select" class="resolution-select" hidden></select>
-    </div>
 
     <div class="chat-wrap">
       <div id="search-bar" class="search-bar" hidden>
@@ -218,6 +194,40 @@
   <!-- Settings now live in a lui window (see openSettings() in app.js).
        Only the hidden file input is kept — the contacts import flow reuses it. -->
   <input id="import-file" type="file" accept="text/plain,.txt" hidden />
+
+  <!-- ============================== CALL WINDOW (floating, screen-independent) ==============================
+       The video call lives in its own top-level overlay so it can keep running
+       while the user navigates the contacts list / other chats. Minimizing
+       collapses it to a draggable PiP square; closing (✕) hangs up. -->
+  <div id="call-window" class="call-window" hidden>
+    <div class="call-head">
+      <span id="cw-peer" class="call-peer">—</span>
+      <span id="cw-state" class="call-state-pill">…</span>
+      <button id="cw-min" class="call-iconbtn" title="minimize" aria-label="minimize">▁</button>
+      <button id="cw-close" class="call-iconbtn call-iconbtn-danger" title="hang up" aria-label="hang up">✕</button>
+    </div>
+    <div class="video-stage">
+      <video id="peer-video" class="peer-video" autoplay        playsinline></video>
+      <video id="my-video"   class="my-video"   autoplay muted   playsinline></video>
+      <div id="stats-overlay" class="stats-overlay" hidden></div>
+      <button id="stats-toggle" class="stats-toggle" title="connection stats">ⓘ</button>
+    </div>
+    <div class="call-controls">
+      <button id="hangup-btn" class="btn btn-danger">Hang up</button>
+      <button id="mute-btn"   class="btn btn-ghost">🔇 Mic</button>
+      <button id="video-btn"  class="btn btn-ghost">🎥 Video</button>
+      <button id="switch-cam" class="btn btn-ghost">↻ Camera</button>
+      <button id="speaker-btn" class="btn btn-ghost">🔊</button>
+      <select id="res-select" class="resolution-select">
+        <option value="240">240p</option>
+        <option value="360">360p</option>
+        <option value="480" selected>480p</option>
+        <option value="720">720p</option>
+      </select>
+      <select id="cam-select" class="resolution-select"></select>
+      <select id="mic-select" class="resolution-select"></select>
+    </div>
+  </div>
 
   <!-- ============================== LIGHTBOX (full-screen image) ============================== -->
   <div id="lightbox" class="lightbox" hidden>

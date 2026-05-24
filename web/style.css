@@ -140,12 +140,16 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
 }
 .bottombar button { flex: 1 }
 
-/* ============================== call screen ============================== */
+/* ============================== call window ============================== */
 
-#screen-call .video-stage {
+/* The video call lives in a floating, screen-independent window (#call-window).
+ * Expanded: near-fullscreen on mobile, centered window on desktop.
+ * Minimized (.mini): a small draggable PiP square showing only the peer video. */
+
+.video-stage {
   position: relative; flex: 1;
   background: #000;
-  min-height: 280px;
+  min-height: 0;
 }
 .peer-video {
   position: absolute; inset: 0;
@@ -177,11 +181,6 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   padding: .5rem .7rem; border-radius: var(--r-sm);
   white-space: pre; pointer-events: none;
 }
-#screen-call .controls {
-  display: flex; gap: .5rem; padding: .75rem 1rem; flex-wrap: wrap;
-  background: var(--bg-soft); border-top: 1px solid var(--line);
-}
-#screen-call .controls button { flex: 1; min-width: 90px }
 .resolution-select {
   background: var(--bg-soft); color: var(--ink);
   border: 1px solid var(--line); border-radius: var(--r-sm);
@@ -189,18 +188,68 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   min-width: 80px;
 }
 
+/* ── floating call window ─────────────────────────────────────────────────── */
+.call-window {
+  position: fixed; z-index: 500;
+  display: flex; flex-direction: column;
+  background: var(--bg); color: var(--ink);
+  border: 1px solid var(--line); box-shadow: 0 18px 50px rgba(0,0,0,.4);
+  overflow: hidden;
+  inset: env(safe-area-inset-top) 0 0 0;            /* mobile: near-fullscreen */
+  border-radius: 16px 16px 0 0;
+}
+@media (min-width: 760px) {                          /* desktop: centered window */
+  .call-window {
+    inset: auto; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    width: min(760px, 92vw); height: min(560px, 88vh);
+    border-radius: 16px;
+  }
+}
+.call-window[hidden] { display: none; }
+.call-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; background: var(--bg-soft); border-bottom: 1px solid var(--line);
+}
+.call-head .call-peer { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.call-state-pill { color: var(--ink-soft); font-size: .85rem; }
+.call-iconbtn {
+  border: 0; background: transparent; cursor: pointer; font-size: 1.1rem;
+  width: 38px; height: 38px; border-radius: var(--r-sm); color: var(--ink);
+}
+.call-iconbtn:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.call-iconbtn-danger:hover { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+.call-controls {
+  display: flex; gap: .5rem; padding: .75rem 1rem; flex-wrap: wrap;
+  background: var(--bg-soft); border-top: 1px solid var(--line);
+  padding-bottom: calc(.75rem + env(safe-area-inset-bottom));
+}
+.call-controls .btn { flex: 1; min-width: 90px; }
+
+/* ── minimized call window (draggable PiP square, tap to expand) ──────────── */
+.call-window.mini {
+  inset: auto; top: auto; left: auto;
+  right: 12px; bottom: 12px; transform: none;
+  width: 116px; height: 160px;
+  border-radius: 14px; border: 2px solid var(--accent);
+  box-shadow: 0 8px 24px rgba(0,0,0,.45);
+  cursor: grab; touch-action: none;
+}
+.call-window.mini.dragging { cursor: grabbing; }
+.call-window.mini .call-head,
+.call-window.mini .call-controls,
+.call-window.mini .my-video,
+.call-window.mini .stats-overlay,
+.call-window.mini .stats-toggle { display: none; }   /* mini shows only peer video */
+.call-window.mini .video-stage { min-height: 0; }
+.call-window.mini .peer-video { object-fit: cover; }
+
 .chat-wrap {
   display: flex; flex-direction: column;
-  max-height: 260px; min-height: 100px;
+  flex: 1; max-height: none; min-height: 100px;
   background: var(--bg);
   border-top: 1px solid var(--line);
 }
 
-/* Without an active call the video stage is pointless — hide it and let the
- * chat grow to fill the whole screen as the conversation gets longer. During
- * a call the video reclaims the space and the chat shrinks to a bottom panel. */
-#screen-call:not(.calling) .video-stage { display: none; }
-#screen-call:not(.calling) .chat-wrap { flex: 1; max-height: none; }
 #chat {
   flex: 1; overflow-y: auto;
   padding: .5rem .75rem;
