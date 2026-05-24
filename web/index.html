@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" content="#1a1d22" />
+  <!-- theme-color is updated at runtime to match the resolved lui theme
+       (see the pre-paint script below); this is just the dark-theme default. -->
+  <meta name="theme-color" content="#15171c" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="telefon" />
@@ -11,22 +13,13 @@
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" type="image/x-icon" href="favicon.ico" />
   <link rel="apple-touch-icon" href="apple-touch-icon.png" />
-  <link rel="stylesheet" href="style.css" />
-  <!-- lui design library (loaded after style.css; telefon's own dark base is
-       preserved below, lui classes are used for the settings window). -->
+  <!-- lui design library FIRST: it defines the CSS variables (--bg, --ink,
+       --accent, --r-*, --sh-*, ...) and the themed html/body canvas. -->
   <link rel="stylesheet" href="lui.css" />
-  <style>
-    /* Keep telefon's dark chrome intact regardless of the lui light/dark theme:
-       lui.css sets html/body to its themed canvas, but telefon paints its own
-       dark background and full-screen .screen panels. We pin the page canvas to
-       telefon's dark color so there is no white flash and the main UI is
-       untouched. lui windows/confirms still follow lui.theme(). */
-    html, body { background: #1a1d22; color: #e8eaed; }
-    /* ...but inside lui windows/confirms, text must follow the lui theme (var
-       --ink), otherwise the pinned light page color would be invisible on a
-       light-theme window background. */
-    .win, .win-body, .confirm, .lui-menu { color: var(--ink); }
-  </style>
+  <!-- telefon styles AFTER lui so they can use lui's variables and the whole
+       app follows lui.theme() (light/dark). No dark pin here anymore — the
+       page canvas is var(--bg) / var(--ink). -->
+  <link rel="stylesheet" href="style.css" />
   <script>
     /* Apply lui theme + language before first paint — no flash, correct lang.
        (Mirrors the lui showcase snippet.) */
@@ -34,6 +27,9 @@
       var s = localStorage.getItem('lui-theme');
       var d = s ? s === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
       document.documentElement.dataset.theme = d ? 'dark' : 'light';
+      // Keep the native status-bar tint (Android) in sync with lui --bg.
+      var tc = document.querySelector('meta[name="theme-color"]');
+      if (tc) tc.setAttribute('content', d ? '#15171c' : '#ffffff');
       var L = ['en', 'ru', 'uk'];
       var lg = localStorage.getItem('lui-lang');
       if (!lg || L.indexOf(lg) < 0) {
@@ -230,7 +226,7 @@
   </div>
 
   <!-- ============================== BUILD TAG ============================== -->
-  <div id="build-tag" style="position:fixed;bottom:2px;right:5px;z-index:60;font:10px/1 monospace;color:#667;pointer-events:none;opacity:.7">build __BUILD__</div>
+  <div id="build-tag" style="position:fixed;bottom:2px;right:5px;z-index:60;font:10px/1 monospace;color:var(--ink-soft);pointer-events:none;opacity:.7">build __BUILD__</div>
 
   <!-- ============================== TOASTS ============================== -->
   <div id="toasts" class="toasts"></div>

@@ -23,6 +23,22 @@ console.log('[boot] storage ready, wiring UI')
 
 const $ = (id) => document.getElementById(id)
 
+// Keep the native status-bar tint (Android theme-color meta) in sync with the
+// resolved lui theme. The pre-paint script sets it once on load; this observer
+// updates it whenever lui.theme() flips html[data-theme] at runtime.
+;(function syncThemeColor() {
+  const meta = document.querySelector('meta[name="theme-color"]')
+  if (!meta) return
+  const apply = () => {
+    const dark = document.documentElement.dataset.theme === 'dark'
+    meta.setAttribute('content', dark ? '#15171c' : '#ffffff')
+  }
+  apply()
+  new MutationObserver(apply).observe(document.documentElement, {
+    attributes: true, attributeFilter: ['data-theme'],
+  })
+})()
+
 // True only inside the Capacitor native shell (Android/iOS), false in the
 // browser PWA. Used to pick FCM vs Web Push and the API base below.
 function isNativePlatform() {
@@ -397,11 +413,13 @@ function handleIntroFrom(body) {
 }
 
 function flashContact(idHex) {
-  // Find the li and pulse it for 1.5s.
+  // Find the li and pulse it for 1.5s using the lui brand accent.
   const li = document.querySelector(`#contacts .contact[data-id="${idHex}"]`)
   if (!li) return
+  const accent = getComputedStyle(document.documentElement)
+    .getPropertyValue('--accent').trim() || '#ff6200'
   li.animate(
-    [{ background: '#3a6ea5' }, { background: 'transparent' }],
+    [{ background: accent }, { background: 'transparent' }],
     { duration: 1500, easing: 'ease-out' },
   )
 }
