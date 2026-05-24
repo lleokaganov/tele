@@ -23,6 +23,34 @@ console.log('[boot] storage ready, wiring UI')
 
 const $ = (id) => document.getElementById(id)
 
+/* =================================== i18n =================================== */
+
+// Shorthand around lui's translator (current → en → key). All telefon strings
+// live in i18n.js, registered into lui's dictionary for every supported language.
+const t = (key, vars) => window.lui.t(key, vars)
+
+// Apply the current language to every tagged node under `root`:
+//   data-i18n        → textContent
+//   data-i18n-ph     → placeholder
+//   data-i18n-title  → title
+//   data-i18n-aria   → aria-label
+// Called once at startup and again on every 'lui:lang' change for live switching.
+function applyI18n(root = document) {
+  root.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n) })
+  root.querySelectorAll('[data-i18n-ph]').forEach((el) => { el.placeholder = t(el.dataset.i18nPh) })
+  root.querySelectorAll('[data-i18n-title]').forEach((el) => { el.title = t(el.dataset.i18nTitle) })
+  root.querySelectorAll('[data-i18n-aria]').forEach((el) => { el.setAttribute('aria-label', t(el.dataset.i18nAria)) })
+}
+
+// Live language switch: re-translate the static page, then re-apply the few
+// dynamic labels that don't ride on a plain data-i18n node (install/update
+// button and the live connection-status pill).
+window.addEventListener('lui:lang', () => {
+  applyI18n()
+  refreshInstallButtonLabel()
+  refreshConnText()
+})
+
 // Keep the native status-bar tint (Android theme-color meta) in sync with the
 // resolved lui theme. The pre-paint script sets it once on load; this observer
 // updates it whenever lui.theme() flips html[data-theme] at runtime.
@@ -221,7 +249,7 @@ function renderContacts() {
       : ''
     li.innerHTML = `
       <div class="avatar ${c.online ? '' : 'off'}">${escapeHtml(contactInitials(c.label, c.id))}</div>
-      <div class="name">${escapeHtml(c.label || '(unnamed)')}</div>
+      <div class="name">${escapeHtml(c.label || t('unnamed'))}</div>
       <div class="id">${c.id.slice(0, 8)}</div>
       ${badge}
       <div class="dot ${c.online ? 'dot-on' : 'dot-off'}"></div>
@@ -296,8 +324,8 @@ function openContactMenu(idHex, x, y) {
     b.onclick = (e) => { e.stopPropagation(); closeContactMenu(); fn() }
     menu.appendChild(b)
   }
-  item('✏️ Rename', () => openRenameDialog(idHex))
-  item('🗑 Delete contact', () => openDeleteContactDialog(idHex), 'danger')
+  item(t('rename'), () => openRenameDialog(idHex))
+  item(t('delete_contact'), () => openDeleteContactDialog(idHex), 'danger')
 
   document.body.appendChild(menu)
   const r = menu.getBoundingClientRect()
@@ -347,8 +375,7 @@ function openDeleteContactDialog(idHex) {
   if (!p) return
   const dlg = $('dialog-delete-contact')
   const name = p.label || idHex.slice(0, 8)
-  $('delete-contact-text').textContent =
-    `Delete "${name}" and all messages & files? This cannot be undone.`
+  $('delete-contact-text').textContent = t('del_contact_text_named', { name })
   dlg.hidden = false
   const close = () => { dlg.hidden = true }
   $('delete-contact-cancel').onclick = close
@@ -369,7 +396,7 @@ function openDeleteContactDialog(idHex) {
     }
     renderContacts()
     close()
-    toast(`Deleted ${name}`, 'success')
+    toast(t('deleted', { name }), 'success')
   }
 }
 
@@ -408,7 +435,7 @@ function handleIntroFrom(body) {
   if (wasNew) {
     playNotify()
     flashContact(idHex)
-    toast(`${nick || idHex.slice(0,8)} added you to contacts`, 'success')
+    toast(t('added_you', { name: nick || idHex.slice(0, 8) }), 'success')
   }
 }
 
@@ -597,17 +624,17 @@ const CALL_TERMINAL = new Set(['idle', 'hangup', 'rejected', 'peer hangup', 'fai
 
 function callStateLabel(s) {
   switch (s) {
-    case 'calling':      return 'Calling…'
+    case 'calling':      return t('call_calling')
     case 'new':
-    case 'connecting':   return 'Connecting…'
-    case 'connected':    return 'Connected'
-    case 'disconnected': return 'Reconnecting…'
-    case 'rejected':     return 'Declined'
-    case 'peer hangup':  return 'Peer hung up'
-    case 'failed':       return 'Connection failed'
+    case 'connecting':   return t('call_connecting')
+    case 'connected':    return t('call_connected')
+    case 'disconnected': return t('call_reconnecting')
+    case 'rejected':     return t('call_declined')
+    case 'peer hangup':  return t('call_peer_hangup')
+    case 'failed':       return t('call_failed')
     case 'hangup':
     case 'closed':
-    case 'idle':         return 'Call ended'
+    case 'idle':         return t('call_ended')
     default:             return s
   }
 }
@@ -894,7 +921,7 @@ async function renderFileMessage(m) {
   const box = document.createElement('div')
   box.className = 'msg-file'
   if (!f) {
-    box.textContent = '[missing file]'
+    box.textContent = t('missing_file')
   } else if (f.mime?.startsWith('image/')) {
     const img = document.createElement('img')
     img.className = 'thumb'
@@ -967,7 +994,7 @@ async function openFileNative(f) {
     const Share = window.Capacitor?.Plugins?.Share
     if (!FS || !Share) {
       console.warn('Filesystem/Share plugin unavailable (run cap sync?)')
-      toast('Cannot open file')
+      toast(t('cannot_open_file'))
       return
     }
     const name = sanitizeFileName(f.name)
@@ -978,7 +1005,7 @@ async function openFileNative(f) {
     await Share.share({ title: f.name, url: uri })
   } catch (e) {
     console.warn('openFileNative failed:', e)
-    toast('Cannot open file')
+    toast(t('cannot_open_file'))
   }
 }
 
@@ -1003,7 +1030,7 @@ function fileMeta(f) {
     const sz = document.createElement('span'); sz.textContent = `· ${size}`
     div.appendChild(sz)
   } else {
-    div.textContent = `📎 ${f.name} · ${size} (transferring…)`
+    div.textContent = `📎 ${f.name} · ${size} (${t('transferring')})`
   }
   return div
 }
@@ -1124,7 +1151,7 @@ const call = new CallManager(client, {
       populateDeviceSelectors()
     }
     if (s === 'connected') {
-      $('mute-btn').textContent = '🔇 Mute'
+      $('mute-btn').textContent = t('mute')
       stopAllRings()
     }
     if (s === 'hangup' || s === 'rejected' || s === 'peer hangup' || s === 'idle' || s === 'failed' || s === 'closed') {
@@ -1210,14 +1237,14 @@ const call = new CallManager(client, {
       client.sendReadAck(peerId, msgId); readAcked.add(msgId)  // chat open → read right away
     } else {
       const p = peerBook[idHex]
-      toast(`${p?.label || idHex.slice(0,8)} sent: ${meta.name}`)
+      toast(t('sent_file', { name: p?.label || idHex.slice(0, 8), file: meta.name }))
       bumpUnread(idHex)
     }
   },
   onIncomingCall: (peerId) => {
     const idHex = u8hex(peerId)
     const name = peerBook[idHex]?.label || idHex.slice(0, 8)
-    $('incoming-name').textContent = `${name} is calling.`
+    $('incoming-name').textContent = t('is_calling', { name })
     $('dialog-incoming').hidden = false
     pendingIncoming = { peerId, idHex }
     playIncoming()
@@ -1250,27 +1277,30 @@ $('incoming-reject').onclick = () => {
 
 /* =================================== client wiring =================================== */
 
-// Map raw WS state to short user-facing status + LED class.
+// Map raw WS state to an i18n key for the short user-facing status + LED class.
+// The label is resolved through lui.t at render time so it follows the language.
 const STATE_LABELS = {
-  connecting:    ['offline',         'dot-off'],
-  handshaking:   ['connecting…',     'dot-warn'],
-  established:   ['online',          'dot-on'],
-  closed:        ['offline',         'dot-off'],
-  'reconnect-in':['reconnecting…',   'dot-warn'],
-  rejected:      ['session taken',   'dot-off'],
-  backoff:       ['offline',         'dot-off'],
-  idle:          ['offline',         'dot-off'],
-  disconnected:  ['offline',         'dot-off'],
+  connecting:    ['state_offline',      'dot-off'],
+  handshaking:   ['state_connecting',   'dot-warn'],
+  established:   ['state_online',       'dot-on'],
+  closed:        ['state_offline',      'dot-off'],
+  'reconnect-in':['state_reconnecting', 'dot-warn'],
+  rejected:      ['state_session_taken','dot-off'],
+  backoff:       ['state_offline',      'dot-off'],
+  idle:          ['state_offline',      'dot-off'],
+  disconnected:  ['state_offline',      'dot-off'],
 }
+let lastConnState = 'connecting'  // remembered so a live lang switch can re-render it
 
 client.onState = ({ state, detail }) => {
-  const [text, dotClass] = STATE_LABELS[state] || [state, 'dot-off']
-  $('conn-text').textContent = text
+  lastConnState = state
+  const [key, dotClass] = STATE_LABELS[state] || [null, 'dot-off']
+  $('conn-text').textContent = key ? t(key) : state
   $('conn-led').className = 'dot ' + dotClass
   const banner = $('fatal-banner')
   if (state === 'rejected') {
     banner.hidden = false
-    banner.textContent = 'Session in use — close other windows that have this page open.'
+    banner.textContent = t('session_in_use')
   } else {
     banner.hidden = true
   }
@@ -1285,6 +1315,17 @@ client.onState = ({ state, detail }) => {
     } else {
       registerWebPush()
     }
+  }
+}
+
+// Re-render the connection-status pill in the current language (used on a live
+// 'lui:lang' switch — onState only fires on actual state changes).
+function refreshConnText() {
+  const [key] = STATE_LABELS[lastConnState] || [null]
+  $('conn-text').textContent = key ? t(key) : lastConnState
+  if (lastConnState === 'rejected') {
+    const banner = $('fatal-banner')
+    if (banner && !banner.hidden) banner.textContent = t('session_in_use')
   }
 }
 
@@ -1376,7 +1417,7 @@ $('add-cancel').onclick = () => { $('dialog-add').hidden = true }
 $('add-save').onclick = () => {
   const qr = extractQrText($('add-qr').value)
   if (!qr) {
-    showAddError('Does not look like a peer code.')
+    showAddError(t('not_peer_code'))
     return
   }
   const label = $('add-label').value.trim() || null
@@ -1392,9 +1433,9 @@ $('add-save').onclick = () => {
     // INTRODUCE silently; user can repeat via a "say hi" button later.
     client.introduce(idU8, nickname || '')
     $('dialog-add').hidden = true
-    toast(`+ ${label || idHex.slice(0, 8)}`, 'success')
+    toast(t('contact_added', { name: label || idHex.slice(0, 8) }), 'success')
   } catch (e) {
-    showAddError(`Code rejected: ${e}`)
+    showAddError(t('code_rejected', { err: e }))
   }
 }
 function showAddError(text) {
@@ -1562,14 +1603,22 @@ window.addEventListener('beforeinstallprompt', (e) => {
 window.addEventListener('appinstalled', () => {
   deferredInstallPrompt = null
   $('btn-install').hidden = true
-  toast('App installed', 'success')
+  toast(t('app_installed'), 'success')
 })
 const NATIVE_APP = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function'
   && window.Capacitor.isNativePlatform())
+// The install/update button carries app-state, not a static data-i18n string:
+// in the native app it's "Update", in the browser PWA it's "Install". Set its
+// label here and re-set it on a live language switch (see the 'lui:lang' wire).
+function refreshInstallButtonLabel() {
+  const btn = $('btn-install')
+  if (!btn) return
+  btn.textContent = NATIVE_APP ? t('update_btn') : t('install')
+}
+refreshInstallButtonLabel()
 if (NATIVE_APP) {
-  // In the native app there's nothing to "install" — repurpose the button
+  // In the native app there's nothing to "install" — the button is repurposed
   // as "Update" (check the server for a newer build and download it).
-  $('btn-install').textContent = '⬆ Обновить'
 } else if (matchMedia('(display-mode: standalone)').matches) {
   $('btn-install').hidden = true  // installed PWA — nothing to install
 }
@@ -1587,10 +1636,10 @@ async function checkAndUpdate() {
   try {
     const r = await fetch('https://tele.karlson.ru/apk/version.txt?t=' + Date.now())
     latest = (await r.text()).trim()
-  } catch { toast('Не удалось проверить обновление', 'error'); return }
-  if (!latest) { toast('Версия на сервере не найдена', 'error'); return }
-  if (latest === cur) { toast(`Актуальная версия (${cur})`, 'success'); return }
-  if (confirm(`Новая версия ${latest} (у вас ${cur}). Скачать и установить?`)) {
+  } catch { toast(t('update_check_failed'), 'error'); return }
+  if (!latest) { toast(t('version_not_found'), 'error'); return }
+  if (latest === cur) { toast(t('up_to_date', { ver: cur }), 'success'); return }
+  if (confirm(t('new_version_q', { latest, cur }))) {
     // _system → Capacitor opens it in the external browser / DownloadManager.
     window.open('https://tele.karlson.ru/apk/telefon-latest.apk?t=' + Date.now(), '_system')
   }
@@ -1598,13 +1647,9 @@ async function checkAndUpdate() {
 
 function manualInstallHint() {
   const ua = navigator.userAgent
-  if (/iPhone|iPad|iPod/.test(ua)) {
-    return 'Tap Share (⎙), then "Add to Home Screen".'
-  }
-  if (/Android/.test(ua)) {
-    return 'Open browser menu (⋮), tap "Install app" or "Add to Home screen".'
-  }
-  return 'Open browser menu, tap "Install" (or "Add to Home Screen").'
+  if (/iPhone|iPad|iPod/.test(ua)) return t('hint_ios')
+  if (/Android/.test(ua))          return t('hint_android')
+  return t('hint_generic')
 }
 
 $('btn-install').onclick = async () => {
@@ -1625,13 +1670,13 @@ $('btn-share-invite').onclick = async () => {
   const url = buildInviteUrl(client.qrText(nickname || ''))
   try {
     if (navigator.share) {
-      await navigator.share({ title: 'ws.tele', text: 'Call me:', url })
+      await navigator.share({ title: t('share_title'), text: t('share_text'), url })
     } else {
       await navigator.clipboard.writeText(url)
-      toast('Invite link copied', 'success')
+      toast(t('invite_copied'), 'success')
     }
   } catch (e) {
-    toast(`share failed: ${e}`, 'error')
+    toast(t('share_failed', { err: e }), 'error')
   }
 }
 
@@ -1663,8 +1708,8 @@ async function copyMsgText(row) {
       document.body.appendChild(ta); ta.select()
       document.execCommand('copy'); ta.remove()
     }
-    toast('Copied')
-  } catch (e) { console.warn('copy failed:', e); toast('Copy failed') }
+    toast(t('copied'))
+  } catch (e) { console.warn('copy failed:', e); toast(t('copy_failed')) }
 }
 
 function openMsgMenu(row, x, y) {
@@ -1683,9 +1728,9 @@ function openMsgMenu(row, x, y) {
     b.onclick = (e) => { e.stopPropagation(); closeMsgMenu(); fn() }
     menu.appendChild(b)
   }
-  if (isOut && !isFile) item('✏️ Edit', () => enterEditMode(msgId))
-  if (!isFile) item('📋 Copy', () => copyMsgText(row))
-  item('🗑 Delete', () => openDeleteDialog(msgId, isOut), 'danger')
+  if (isOut && !isFile) item(t('edit'), () => enterEditMode(msgId))
+  if (!isFile) item(t('copy'), () => copyMsgText(row))
+  item(t('del_msg'), () => openDeleteDialog(msgId, isOut), 'danger')
 
   document.body.appendChild(menu)
   const r = menu.getBoundingClientRect()
@@ -1742,7 +1787,7 @@ function _ensureSelCopyBtn() {
   if (_selCopyBtn) return _selCopyBtn
   const b = document.createElement('button')
   b.className = 'sel-copy-btn'
-  b.textContent = '📋 Copy'
+  b.textContent = t('copy')
   b.style.display = 'none'
   // Don't let the press clear the selection before the click handler runs.
   b.addEventListener('mousedown', (e) => e.preventDefault())
@@ -1753,8 +1798,8 @@ function _ensureSelCopyBtn() {
       try {
         if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(t)
         else document.execCommand('copy')
-        toast('Copied')
-      } catch (e) { console.warn('copy failed', e); toast('Copy failed') }
+        toast(t('copied'))
+      } catch (e) { console.warn('copy failed', e); toast(t('copy_failed')) }
     }
     b.style.display = 'none'
     window.getSelection()?.removeAllRanges?.()
@@ -1808,7 +1853,7 @@ function openDeleteDialog(msgId, isOut) {
   const box = document.createElement('div')
   box.className = 'dialog-box'
   const title = document.createElement('div')
-  title.className = 'dialog-title'; title.textContent = 'Delete message?'
+  title.className = 'dialog-title'; title.textContent = t('del_msg_title')
   box.appendChild(title)
 
   const btns = document.createElement('div')
@@ -1817,9 +1862,9 @@ function openDeleteDialog(msgId, isOut) {
     const b = document.createElement('button'); b.className = cls; b.textContent = label; b.onclick = fn
     btns.appendChild(b)
   }
-  mkBtn('Cancel', 'secondary', close)
-  mkBtn('Delete for me', 'danger', () => doDelete(false))
-  if (isOut) mkBtn('Delete for everyone', 'danger', () => doDelete(true))
+  mkBtn(t('cancel'), 'secondary', close)
+  mkBtn(t('del_for_me'), 'danger', () => doDelete(false))
+  if (isOut) mkBtn(t('del_for_all'), 'danger', () => doDelete(true))
   box.appendChild(btns)
   overlay.appendChild(box)
   overlay.onclick = (e) => { if (e.target === overlay) close() }
@@ -1847,13 +1892,13 @@ $('btn-clear-history').onclick = () => {
   const close = () => overlay.remove()
   overlay.innerHTML = `
     <div class="dialog-box">
-      <div class="dialog-title">Clear history?</div>
-      <div class="dialog-text">Delete the entire conversation with ${escapeHtml(name)} on this device. This cannot be undone and does not affect the other side.</div>
+      <div class="dialog-title">${escapeHtml(t('clear_history_title'))}</div>
+      <div class="dialog-text">${escapeHtml(t('clear_history_text', { name }))}</div>
     </div>`
   const btns = document.createElement('div')
   btns.className = 'dialog-buttons'
-  const cancel = document.createElement('button'); cancel.className = 'secondary'; cancel.textContent = 'Cancel'; cancel.onclick = close
-  const ok = document.createElement('button'); ok.className = 'danger'; ok.textContent = 'Clear'
+  const cancel = document.createElement('button'); cancel.className = 'secondary'; cancel.textContent = t('cancel'); cancel.onclick = close
+  const ok = document.createElement('button'); ok.className = 'danger'; ok.textContent = t('clear')
   ok.onclick = async () => {
     await Storage.clearHistory(currentPeerId)
     cancelEdit()
@@ -1910,8 +1955,8 @@ async function runSearch(query) {
   renderedMessages.clear()
   for (const m of rows) box.appendChild(renderSearchHit(m, q))
   $('search-info').textContent = rows.length
-    ? `${rows.length} found`
-    : 'Nothing found'
+    ? t('found', { n: rows.length })
+    : t('nothing_found')
   // Results read top-down, newest at the bottom — show the start of the list.
   box.scrollTop = 0
 }
@@ -2019,11 +2064,11 @@ $('cw-mini-end').onclick = (e) => { e.stopPropagation(); call.hangup() }
 $('switch-cam').onclick = () => call.switchCamera()
 $('mute-btn').onclick   = () => {
   const muted = call.toggleMute()
-  $('mute-btn').textContent = muted ? '🎤 Mic off' : '🔇 Mic'
+  $('mute-btn').textContent = muted ? t('mic_off') : t('mic')
 }
 $('video-btn').onclick = () => {
   const off = call.toggleVideo()
-  $('video-btn').textContent = off ? '📷 Video off' : '🎥 Video'
+  $('video-btn').textContent = off ? t('video_off') : t('video')
 }
 $('res-select').onchange = () => {
   call.setVideoResolution(parseInt($('res-select').value, 10))
@@ -2035,8 +2080,8 @@ $('res-select').onchange = () => {
 async function populateDeviceSelectors() {
   let devs
   try { devs = await call.listDevices() } catch { return }
-  fillDeviceSelect($('cam-select'), devs.videoInputs, 'Camera')
-  fillDeviceSelect($('mic-select'), devs.audioInputs, 'Microphone')
+  fillDeviceSelect($('cam-select'), devs.videoInputs, t('dev_camera'))
+  fillDeviceSelect($('mic-select'), devs.audioInputs, t('dev_mic'))
 }
 
 function fillDeviceSelect(sel, list, kindLabel) {
@@ -2071,18 +2116,18 @@ $('speaker-btn').onclick = async () => {
     if (!speakerCycle) {
       const devs = await navigator.mediaDevices.enumerateDevices()
       speakerCycle = devs.filter(d => d.kind === 'audiooutput')
-      if (speakerCycle.length === 0) { toast('no audio outputs', 'error'); return }
+      if (speakerCycle.length === 0) { toast(t('no_audio_outputs'), 'error'); return }
     }
     speakerIdx = (speakerIdx + 1) % speakerCycle.length
     const dev = speakerCycle[speakerIdx]
     await call.setAudioSink(dev.deviceId)
-    const labelGuess = /speaker|loudspeaker/i.test(dev.label) ? '🔊 Loud'
-                     : /earpiece|receiver/i.test(dev.label)   ? '🎧 Earpiece'
-                     : '🔊 ' + (dev.label || 'output')
+    const labelGuess = /speaker|loudspeaker/i.test(dev.label) ? '🔊 ' + t('spk_loud')
+                     : /earpiece|receiver/i.test(dev.label)   ? '🎧 ' + t('spk_earpiece')
+                     : '🔊 ' + (dev.label || t('spk_output'))
     $('speaker-btn').textContent = labelGuess
     toast(dev.label || dev.deviceId, 'success')
   } catch (e) {
-    toast(`audio sink: ${e.message}`, 'error')
+    toast(t('audio_sink_err', { err: e.message }), 'error')
   }
 }
 $('send-text').onclick = async () => {
@@ -2137,7 +2182,7 @@ $('file-input').onchange = async (e) => {
 }
 
 async function sendFile(file) {
-  if (!currentPeerId) { toast('No peer selected', 'error'); return }
+  if (!currentPeerId) { toast(t('no_peer'), 'error'); return }
   const peerId = hexU8(currentPeerId)
   const fileId = crypto.randomUUID()
   const msgId  = crypto.randomUUID()
@@ -2481,9 +2526,9 @@ $('import-file').onchange = async (e) => {
     persist()
     renderContacts()
     subscribeAll()
-    toast(`imported: ${imported}`, 'success')
+    toast(t('imported', { n: imported }), 'success')
   } catch (e2) {
-    toast(`import failed: ${e2}`, 'error')
+    toast(t('import_failed', { err: e2 }), 'error')
   }
   e.target.value = ''
 }
@@ -2508,54 +2553,55 @@ function openSettings() {
   const invite   = buildInviteUrl(client.qrText(nickname || ''))
   const idLine   = `id: ${u8hex(client.myId)}`
   const themeNow = lui.theme()                 // 'auto' | 'light' | 'dark'
-  const langNow  = lui.lang()                  // 'en' | 'ru' | 'uk'
+  const langNow  = lui.lang()                  // current language code
   const fxNow    = lui.setEffects()            // boolean
   const verNow   = ($('build-tag')?.textContent || '').replace(/^build\s*/, '').trim() || '—'
 
+  // Language picker: code → endonym (each language's own name; not translated).
+  const LANG_NAMES = { en: 'English', es: 'Español', zh: '中文', ko: '한국어', fi: 'Suomi', ru: 'Русский', uk: 'Українська' }
+  const langOpts = Object.entries(LANG_NAMES)
+    .map(([code, name]) => `<option value="${code}">${name}</option>`).join('')
+
   const html = `
     <div class="set-sec">
-      <h3>Моё имя</h3>
+      <h3>${escapeHtml(t('set_name'))}</h3>
       <div class="set-row">
-        <input id="set-name" class="input" type="text" maxlength="40" placeholder="ваше имя" data-nopersist />
-        <button id="set-name-save" class="btn btn-primary">OK</button>
+        <input id="set-name" class="input" type="text" maxlength="40" placeholder="${escapeHtml(t('set_name_ph'))}" data-nopersist />
+        <button id="set-name-save" class="btn btn-primary">${escapeHtml(t('ok'))}</button>
       </div>
     </div>
 
     <div class="set-sec">
-      <h3>Мой invite</h3>
+      <h3>${escapeHtml(t('set_invite'))}</h3>
       <input id="set-invite" class="input" type="text" data-copy data-nopersist />
-      <div class="muted" style="margin-top:6px">Кликни по полю, чтобы скопировать.</div>
+      <div class="muted" style="margin-top:6px">${escapeHtml(t('click_to_copy'))}</div>
       <div class="set-row" style="margin-top:8px">
-        <button id="set-export" class="btn btn-ghost">Экспорт контактов</button>
-        <button id="set-import" class="btn btn-ghost">Импорт контактов</button>
+        <button id="set-export" class="btn btn-ghost">${escapeHtml(t('export_contacts'))}</button>
+        <button id="set-import" class="btn btn-ghost">${escapeHtml(t('import_contacts'))}</button>
       </div>
       <div class="muted" id="set-id" data-copy style="margin-top:8px"></div>
     </div>
 
     <div class="set-sec">
-      <h3>Внешний вид</h3>
+      <h3>${escapeHtml(t('set_appearance'))}</h3>
       <div class="set-row" style="justify-content:space-between">
-        <span>Тема</span>
+        <span>${escapeHtml(t('set_theme'))}</span>
         <span class="select">
           <select id="set-theme" data-nopersist>
-            <option value="auto">Авто</option>
-            <option value="light">Светлая</option>
-            <option value="dark">Тёмная</option>
+            <option value="auto">${escapeHtml(t('theme_auto'))}</option>
+            <option value="light">${escapeHtml(t('theme_light'))}</option>
+            <option value="dark">${escapeHtml(t('theme_dark'))}</option>
           </select>
         </span>
       </div>
       <div class="set-row" style="justify-content:space-between; margin-top:12px">
-        <span>Язык</span>
+        <span>${escapeHtml(t('set_lang'))}</span>
         <span class="select">
-          <select id="set-lang" data-nopersist>
-            <option value="ru">Русский</option>
-            <option value="en">English</option>
-            <option value="uk">Українська</option>
-          </select>
+          <select id="set-lang" data-nopersist>${langOpts}</select>
         </span>
       </div>
       <div class="set-row" style="justify-content:space-between; margin-top:12px">
-        <span>Эффекты (анимации, звук, вибро)</span>
+        <span>${escapeHtml(t('set_effects'))}</span>
         <label class="toggle">
           <input id="set-fx" type="checkbox" data-nopersist />
           <span class="track"></span>
@@ -2564,36 +2610,36 @@ function openSettings() {
     </div>
 
     <div class="set-sec">
-      <h3>Сервер</h3>
-      <input id="set-url" class="input" type="text" placeholder="wss://your-server/ws" data-nopersist />
+      <h3>${escapeHtml(t('set_server'))}</h3>
+      <input id="set-url" class="input" type="text" placeholder="${escapeHtml(t('server_ph'))}" data-nopersist />
       <div class="set-row" style="margin-top:8px">
-        <button id="set-srv-save"  class="btn btn-primary">Сохранить и перезапустить</button>
-        <button id="set-srv-reset" class="btn btn-ghost">Сбросить к дефолту</button>
+        <button id="set-srv-save"  class="btn btn-primary">${escapeHtml(t('srv_save'))}</button>
+        <button id="set-srv-reset" class="btn btn-ghost">${escapeHtml(t('srv_reset'))}</button>
       </div>
       <details class="set-adv">
-        <summary>Расширенное</summary>
-        <label class="muted">Server X25519 pub (hex)</label>
-        <input id="set-xpub"  class="input" type="text" placeholder="64 hex chars" data-nopersist />
-        <label class="muted">Server Ed25519 pub (hex)</label>
-        <input id="set-edpub" class="input" type="text" placeholder="64 hex chars" data-nopersist />
+        <summary>${escapeHtml(t('advanced'))}</summary>
+        <label class="muted">${escapeHtml(t('xpub_label'))}</label>
+        <input id="set-xpub"  class="input" type="text" placeholder="${escapeHtml(t('hex_ph'))}" data-nopersist />
+        <label class="muted">${escapeHtml(t('edpub_label'))}</label>
+        <input id="set-edpub" class="input" type="text" placeholder="${escapeHtml(t('hex_ph'))}" data-nopersist />
       </details>
     </div>
 
     <div class="set-sec">
-      <h3>Обновление</h3>
+      <h3>${escapeHtml(t('update'))}</h3>
       <div class="set-row" style="justify-content:space-between">
-        <span class="muted">Версия ${escapeHtml(verNow)}</span>
-        <button id="set-update" class="btn btn-ghost">Проверить обновление</button>
+        <span class="muted">${escapeHtml(t('version', { ver: verNow }))}</span>
+        <button id="set-update" class="btn btn-ghost">${escapeHtml(t('check_update'))}</button>
       </div>
     </div>
 
     <details class="set-sec set-danger">
-      <summary>Опасная зона</summary>
-      <p class="muted set-danger-note">Полностью стирает ключи, контакты и историю. Отменить нельзя — друзья перестанут вас узнавать.</p>
-      <a id="set-wipe" class="set-wipe-link" role="button" tabindex="0">Wipe identity</a>
+      <summary>${escapeHtml(t('danger_zone'))}</summary>
+      <p class="muted set-danger-note">${escapeHtml(t('wipe_warn'))}</p>
+      <a id="set-wipe" class="set-wipe-link" role="button" tabindex="0">${escapeHtml(t('wipe'))}</a>
     </details>`
 
-  const w = lui.win('Настройки', html)
+  const w = lui.win(t('settings_title'), html)
   const q = (sel) => w.querySelector(sel)
 
   // Prefill values.
@@ -2610,12 +2656,12 @@ function openSettings() {
   // ── My name ──
   q('#set-name-save').onclick = () => {
     const v = q('#set-name').value.trim()
-    if (!v) { toast('Name cannot be empty', 'error'); return }
+    if (!v) { toast(t('name_empty'), 'error'); return }
     nickname = v
     saveNickname(v)
     $('my-nickname').textContent = v
     q('#set-invite').value = buildInviteUrl(client.qrText(nickname))
-    lui.toast('Name updated')
+    lui.toast(t('name_updated'))
   }
 
   // ── Invite / contacts ── (invite copies on click via data-copy; id too)
@@ -2633,8 +2679,8 @@ function openSettings() {
     const url = q('#set-url').value.trim()
     const xp  = q('#set-xpub').value.trim().toLowerCase()
     const ep  = q('#set-edpub').value.trim().toLowerCase()
-    if (xp && !/^[0-9a-f]{64}$/.test(xp)) { toast('X-pub: нужно 64 hex-символа', 'error'); return }
-    if (ep && !/^[0-9a-f]{64}$/.test(ep)) { toast('Ed-pub: нужно 64 hex-символа', 'error'); return }
+    if (xp && !/^[0-9a-f]{64}$/.test(xp)) { toast(t('xpub_need_hex'), 'error'); return }
+    if (ep && !/^[0-9a-f]{64}$/.test(ep)) { toast(t('edpub_need_hex'), 'error'); return }
     const dUrl = smartDefaultUrl()
     // Only persist values that differ from the (smart) default — keep storage clean.
     url && url !== dUrl               ? localStorage.setItem('telefon_ws_url', url)   : localStorage.removeItem('telefon_ws_url')

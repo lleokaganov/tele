@@ -30,7 +30,7 @@
       // Keep the native status-bar tint (Android) in sync with lui --bg.
       var tc = document.querySelector('meta[name="theme-color"]');
       if (tc) tc.setAttribute('content', d ? '#15171c' : '#ffffff');
-      var L = ['en', 'ru', 'uk'];
+      var L = ['en', 'es', 'zh', 'ko', 'fi', 'ru', 'uk'];
       var lg = localStorage.getItem('lui-lang');
       if (!lg || L.indexOf(lg) < 0) {
         lg = (navigator.language || 'en').slice(0, 2).toLowerCase();
@@ -72,55 +72,55 @@
       <span id="conn-led" class="dot dot-off"></span>
       <div class="title">
         <span id="my-nickname">…</span>
-        <span class="muted" id="conn-text">connecting…</span>
+        <span class="muted" id="conn-text" data-i18n="connecting">connecting…</span>
       </div>
-      <button id="btn-settings" class="iconbtn" title="settings">⚙</button>
+      <button id="btn-settings" class="iconbtn" data-i18n-title="settings" title="settings">⚙</button>
     </header>
 
     <div id="fatal-banner" class="fatal" hidden></div>
 
     <ul id="contacts" class="contacts"></ul>
 
-    <div id="contacts-empty" class="empty" hidden>
+    <div id="contacts-empty" class="empty" hidden data-i18n="no_contacts">
       No contacts yet. Share your invite link below, or hit "+ Add contact" if a friend gave you their code.
     </div>
 
     <div class="bottombar">
-      <button id="btn-add-contact" class="primary">+ Add contact</button>
-      <button id="btn-share-invite" class="secondary">Share invite</button>
-      <button id="btn-apk" class="secondary" hidden>📥 Скачать приложение</button>
-      <button id="btn-install" class="secondary">📲 Install</button>
+      <button id="btn-add-contact" class="primary" data-i18n="add_contact">+ Add contact</button>
+      <button id="btn-share-invite" class="secondary" data-i18n="share_invite">Share invite</button>
+      <button id="btn-apk" class="secondary" hidden data-i18n="download_app">📥 Download app</button>
+      <button id="btn-install" class="secondary" data-i18n="install">📲 Install</button>
     </div>
   </section>
 
   <!-- ============================== SCREEN: call / chat ============================== -->
   <section id="screen-call" class="screen">
     <header class="topbar">
-      <button id="btn-back" class="iconbtn" title="back">←</button>
+      <button id="btn-back" class="iconbtn" data-i18n-title="back" title="back">←</button>
       <div class="title">
         <span id="call-peer-name">—</span>
         <span id="call-peer-online" class="dot dot-off"></span>
       </div>
-      <button id="call-btn" class="iconbtn" title="call" aria-label="call">📞</button>
-      <button id="btn-search" class="iconbtn" title="search history">🔍</button>
-      <button id="btn-clear-history" class="iconbtn" title="clear history">🗑</button>
+      <button id="call-btn" class="iconbtn" data-i18n-title="call" data-i18n-aria="call" title="call" aria-label="call">📞</button>
+      <button id="btn-search" class="iconbtn" data-i18n-title="search_history" title="search history">🔍</button>
+      <button id="btn-clear-history" class="iconbtn" data-i18n-title="clear_history" title="clear history">🗑</button>
     </header>
 
     <div class="chat-wrap">
       <div id="search-bar" class="search-bar" hidden>
-        <input id="search-input" type="text" placeholder="Search messages" />
+        <input id="search-input" type="text" data-i18n-ph="search_placeholder" placeholder="Search messages" />
         <span id="search-info" class="search-info"></span>
-        <button id="search-close" class="iconbtn" title="close search">✕</button>
+        <button id="search-close" class="iconbtn" data-i18n-title="close_search" title="close search">✕</button>
       </div>
       <div id="chat"></div>
       <div id="edit-banner" class="edit-banner" hidden>
-        <span>✏️ Editing message</span>
-        <button id="edit-cancel" class="iconbtn" title="cancel edit">✕</button>
+        <span data-i18n="editing_message">✏️ Editing message</span>
+        <button id="edit-cancel" class="iconbtn" data-i18n-title="cancel_edit" title="cancel edit">✕</button>
       </div>
       <div class="chat-input">
         <input id="file-input" type="file" hidden multiple />
-        <button id="attach-btn" class="secondary" title="Attach file">📎</button>
-        <textarea id="text-input" rows="1" placeholder="message"></textarea>
+        <button id="attach-btn" class="secondary" data-i18n-title="attach_file" title="Attach file">📎</button>
+        <textarea id="text-input" rows="1" data-i18n-ph="msg_placeholder" placeholder="message"></textarea>
         <button id="send-text" class="primary">→</button>
       </div>
     </div>
@@ -129,11 +129,11 @@
   <!-- ============================== DIALOG: first-run nickname ============================== -->
   <div id="dialog-nickname" class="dialog" hidden>
     <div class="dialog-box">
-      <div class="dialog-title">What's your name?</div>
-      <div class="dialog-text">This is the name people you invite will see. Without it, they won't know who sent them the keys.</div>
-      <input id="nick-input" type="text" placeholder="e.g. Pat" autofocus />
+      <div class="dialog-title" data-i18n="nick_title">What's your name?</div>
+      <div class="dialog-text" data-i18n="nick_hint">This is the name people you invite will see. Without it, they won't know who sent them the keys.</div>
+      <input id="nick-input" type="text" data-i18n-ph="nick_ph" placeholder="e.g. Pat" autofocus />
       <div class="dialog-buttons">
-        <button id="nick-save" class="primary">Save</button>
+        <button id="nick-save" class="primary" data-i18n="save">Save</button>
       </div>
     </div>
   </div>
@@ -141,15 +141,15 @@
   <!-- ============================== DIALOG: add contact ============================== -->
   <div id="dialog-add" class="dialog" hidden>
     <div class="dialog-box">
-      <div class="dialog-title">New contact</div>
-      <label>Invite link or K0… code</label>
-      <input id="add-qr" type="text" placeholder="https://tele.lleo.me/?peer=K0… or just K0…" />
-      <label>Name</label>
-      <input id="add-label" type="text" placeholder="e.g. Lena" />
+      <div class="dialog-title" data-i18n="add_title">New contact</div>
+      <label data-i18n="add_code_label">Invite link or K0… code</label>
+      <input id="add-qr" type="text" data-i18n-ph="add_code_ph" placeholder="https://tele.lleo.me/?peer=K0… or just K0…" />
+      <label data-i18n="name_label">Name</label>
+      <input id="add-label" type="text" data-i18n-ph="name_ph" placeholder="e.g. Lena" />
       <div class="dialog-error" id="add-error" hidden></div>
       <div class="dialog-buttons">
-        <button id="add-cancel" class="secondary">Cancel</button>
-        <button id="add-save"   class="primary">Save</button>
+        <button id="add-cancel" class="secondary" data-i18n="cancel">Cancel</button>
+        <button id="add-save"   class="primary" data-i18n="save">Save</button>
       </div>
     </div>
   </div>
@@ -157,12 +157,12 @@
   <!-- ============================== DIALOG: rename contact ============================== -->
   <div id="dialog-rename" class="dialog" hidden>
     <div class="dialog-box">
-      <div class="dialog-title">Rename contact</div>
-      <label>Name</label>
-      <input id="rename-input" type="text" placeholder="e.g. Lena" />
+      <div class="dialog-title" data-i18n="rename_title">Rename contact</div>
+      <label data-i18n="name_label">Name</label>
+      <input id="rename-input" type="text" data-i18n-ph="name_ph" placeholder="e.g. Lena" />
       <div class="dialog-buttons">
-        <button id="rename-cancel" class="secondary">Cancel</button>
-        <button id="rename-save"   class="primary">Save</button>
+        <button id="rename-cancel" class="secondary" data-i18n="cancel">Cancel</button>
+        <button id="rename-save"   class="primary" data-i18n="save">Save</button>
       </div>
     </div>
   </div>
@@ -170,11 +170,11 @@
   <!-- ============================== DIALOG: delete contact ============================== -->
   <div id="dialog-delete-contact" class="dialog" hidden>
     <div class="dialog-box">
-      <div class="dialog-title">Delete contact?</div>
-      <div id="delete-contact-text" class="dialog-text">Delete contact and all messages &amp; files? This cannot be undone.</div>
+      <div class="dialog-title" data-i18n="del_contact_title">Delete contact?</div>
+      <div id="delete-contact-text" class="dialog-text" data-i18n="del_contact_text">Delete contact and all messages &amp; files? This cannot be undone.</div>
       <div class="dialog-buttons">
-        <button id="delete-contact-cancel" class="secondary">Cancel</button>
-        <button id="delete-contact-confirm" class="danger">Delete</button>
+        <button id="delete-contact-cancel" class="secondary" data-i18n="cancel">Cancel</button>
+        <button id="delete-contact-confirm" class="danger" data-i18n="delete">Delete</button>
       </div>
     </div>
   </div>
@@ -182,11 +182,11 @@
   <!-- ============================== DIALOG: incoming call ============================== -->
   <div id="dialog-incoming" class="dialog" hidden>
     <div class="dialog-box">
-      <div class="dialog-title">📞 Incoming call</div>
+      <div class="dialog-title" data-i18n="incoming_call">📞 Incoming call</div>
       <div id="incoming-name" class="dialog-text">—</div>
       <div class="dialog-buttons">
-        <button id="incoming-reject" class="danger">Decline</button>
-        <button id="incoming-accept" class="primary">Accept</button>
+        <button id="incoming-reject" class="danger" data-i18n="decline">Decline</button>
+        <button id="incoming-accept" class="primary" data-i18n="accept">Accept</button>
       </div>
     </div>
   </div>
@@ -203,20 +203,20 @@
     <div class="call-head">
       <span id="cw-peer" class="call-peer">—</span>
       <span id="cw-state" class="call-state-pill">…</span>
-      <button id="cw-min" class="call-iconbtn" title="minimize" aria-label="minimize">▁</button>
-      <button id="cw-close" class="call-iconbtn call-iconbtn-danger" title="hang up" aria-label="hang up">✕</button>
+      <button id="cw-min" class="call-iconbtn" data-i18n-title="minimize" data-i18n-aria="minimize" title="minimize" aria-label="minimize">▁</button>
+      <button id="cw-close" class="call-iconbtn call-iconbtn-danger" data-i18n-title="hang_up_t" data-i18n-aria="hang_up_t" title="hang up" aria-label="hang up">✕</button>
     </div>
     <div class="video-stage">
       <video id="peer-video" class="peer-video" autoplay        playsinline></video>
       <video id="my-video"   class="my-video"   autoplay muted   playsinline></video>
       <div id="stats-overlay" class="stats-overlay" hidden></div>
-      <button id="stats-toggle" class="stats-toggle" title="connection stats">ⓘ</button>
+      <button id="stats-toggle" class="stats-toggle" data-i18n-title="conn_stats" title="connection stats">ⓘ</button>
     </div>
     <div class="call-controls">
-      <button id="hangup-btn" class="btn btn-danger">Hang up</button>
-      <button id="mute-btn"   class="btn btn-ghost">🔇 Mic</button>
-      <button id="video-btn"  class="btn btn-ghost">🎥 Video</button>
-      <button id="switch-cam" class="btn btn-ghost">↻ Camera</button>
+      <button id="hangup-btn" class="btn btn-danger" data-i18n="hang_up">Hang up</button>
+      <button id="mute-btn"   class="btn btn-ghost" data-i18n="mic">🔇 Mic</button>
+      <button id="video-btn"  class="btn btn-ghost" data-i18n="video">🎥 Video</button>
+      <button id="switch-cam" class="btn btn-ghost" data-i18n="camera">↻ Camera</button>
       <button id="speaker-btn" class="btn btn-ghost">🔊</button>
       <select id="res-select" class="resolution-select">
         <option value="240">240p</option>
@@ -229,12 +229,12 @@
     </div>
     <!-- Shown only while minimized: a direct hang-up so you can always stop a
          call without expanding first. -->
-    <button id="cw-mini-end" class="cw-mini-end" title="hang up" aria-label="hang up">✕</button>
+    <button id="cw-mini-end" class="cw-mini-end" data-i18n-title="hang_up_t" data-i18n-aria="hang_up_t" title="hang up" aria-label="hang up">✕</button>
   </div>
 
   <!-- ============================== LIGHTBOX (full-screen image) ============================== -->
   <div id="lightbox" class="lightbox" hidden>
-    <button id="lightbox-close" class="lightbox-close" title="close">✕</button>
+    <button id="lightbox-close" class="lightbox-close" data-i18n-title="close" title="close">✕</button>
     <img id="lightbox-img" alt="" />
   </div>
 
@@ -246,6 +246,11 @@
 
   <script src="./DB.js"></script>
   <script src="./lui.js"></script>
+  <!-- Classic script: registers telefon's i18n strings into lui's dictionary
+       for all 7 languages. Must run AFTER lui.js (defines lui.addDict) and
+       BEFORE app.js (which reads the dictionary via lui.t / applyI18n). app.js
+       is an ES module → deferred, so this classic script runs first. -->
+  <script src="./i18n.js"></script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>
