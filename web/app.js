@@ -2619,10 +2619,9 @@ function openSettings() {
     <div class="set-sec">
       <h3>${escapeHtml(t('set_server'))}</h3>
       <p class="muted" style="margin:4px 0 10px; line-height:1.4">${escapeHtml(t('server_hint'))}</p>
-      <input id="set-url" class="input" type="text" placeholder="${escapeHtml(t('server_ph'))}" data-nopersist />
-      <div class="set-row" style="margin-top:8px">
-        <button id="set-srv-save"  class="btn btn-primary">${escapeHtml(t('srv_save'))}</button>
-        <button id="set-srv-reset" class="btn btn-ghost">${escapeHtml(t('srv_reset'))}</button>
+      <div class="set-row">
+        <span id="set-url-display" class="inline-edit" tabindex="0" role="button" title="${escapeHtml(t('tap_to_edit'))}"></span>
+        <input id="set-url" class="input" type="text" data-nopersist hidden />
       </div>
       <details class="set-adv">
         <summary>${escapeHtml(t('advanced'))}</summary>
@@ -2654,7 +2653,6 @@ function openSettings() {
   q('#set-theme').value  = themeNow
   q('#set-lang').value   = langNow
   q('#set-fx').checked   = !!fxNow
-  q('#set-url').value    = curUrl
   q('#set-xpub').value   = curXpub
   q('#set-edpub').value  = curEdpub
 
@@ -2710,28 +2708,66 @@ function openSettings() {
     if (on) { lui.sound('ok'); lui.vibrate('ok'); lui.toast(t('effects_on')) }
   }
 
-  // ── Server config ──
-  q('#set-srv-save').onclick = () => {
-    const url = q('#set-url').value.trim()
-    const xp  = q('#set-xpub').value.trim().toLowerCase()
-    const ep  = q('#set-edpub').value.trim().toLowerCase()
-    if (xp && !/^[0-9a-f]{64}$/.test(xp)) { toast(t('xpub_need_hex'), 'error'); return }
-    if (ep && !/^[0-9a-f]{64}$/.test(ep)) { toast(t('edpub_need_hex'), 'error'); return }
-    const dUrl = smartDefaultUrl()
-    // Only persist values that differ from the (smart) default — keep storage clean.
-    url && url !== dUrl               ? localStorage.setItem('telefon_ws_url', url)   : localStorage.removeItem('telefon_ws_url')
-    xp  && xp  !== SRV_DEFAULTS.xpub  ? localStorage.setItem('telefon_srv_xpub', xp)  : localStorage.removeItem('telefon_srv_xpub')
-    ep  && ep  !== SRV_DEFAULTS.edpub ? localStorage.setItem('telefon_srv_edpub', ep) : localStorage.removeItem('telefon_srv_edpub')
-    toast(t('saved_restart'), 'success')
-    setTimeout(() => location.reload(), 600)
+  // ── Server config (no buttons: URL is inline-edit, empty = default; any
+  //    change persists and reconnects right away with a progress bar) ──
+  const dUrl = smartDefaultUrl()
+  let reconnecting = false
+  const reconnectNow = () => {
+    if (reconnecting) return
+    reconnecting = true
+    lui.toast(t('reconnecting'))
+    lui.progress.task().run(900)      // brief bar; the page reloads to reconnect
+    setTimeout(() => location.reload(), 800)
   }
-  q('#set-srv-reset').onclick = () => {
-    localStorage.removeItem('telefon_ws_url')
-    localStorage.removeItem('telefon_srv_xpub')
-    localStorage.removeItem('telefon_srv_edpub')
-    toast(t('reset_restart'), 'success')
-    setTimeout(() => location.reload(), 600)
+
+  // URL — shown as text with a pencil; empty field uses the default (its
+  // placeholder shows exactly what that default is).
+  const urlDisplay = q('#set-url-display')
+  const urlInput   = q('#set-url')
+  urlInput.placeholder = dUrl
+  const effectiveUrl = () => (localStorage.getItem('telefon_ws_url') || dUrl)
+  const showUrlText = () => {
+    urlDisplay.textContent = effectiveUrl()
+    urlDisplay.hidden = false
+    urlInput.hidden = true
   }
+  const editUrl = () => {
+    urlInput.value = localStorage.getItem('telefon_ws_url') || ''  // empty → placeholder=default
+    urlDisplay.hidden = true
+    urlInput.hidden = false
+    urlInput.focus(); try { urlInput.select() } catch {}
+  }
+  const commitUrl = () => {
+    const before = effectiveUrl()
+    const v = urlInput.value.trim()
+    if (v && v !== dUrl) localStorage.setItem('telefon_ws_url', v)
+    else                 localStorage.removeItem('telefon_ws_url')   // empty/default → use default
+    showUrlText()
+    if (effectiveUrl() !== before) reconnectNow()
+  }
+  urlDisplay.onclick = editUrl
+  urlDisplay.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); editUrl() } }
+  urlInput.onblur = commitUrl
+  urlInput.onkeydown = (e) => {
+    if (e.key === 'Enter')       { e.preventDefault(); urlInput.blur() }
+    else if (e.key === 'Escape') { e.preventDefault(); showUrlText() }
+  }
+  showUrlText()
+
+  // Advanced server keys — validate hex on blur, persist, reconnect if changed.
+  const commitKey = (inputSel, lsKey, def, errKey) => {
+    const el = q(inputSel)
+    el.onblur = () => {
+      const v = el.value.trim().toLowerCase()
+      if (v && !/^[0-9a-f]{64}$/.test(v)) { toast(t(errKey), 'error'); return }
+      const before = localStorage.getItem(lsKey) || def
+      if (v && v !== def) localStorage.setItem(lsKey, v)
+      else                localStorage.removeItem(lsKey)
+      if ((localStorage.getItem(lsKey) || def) !== before) reconnectNow()
+    }
+  }
+  commitKey('#set-xpub',  'telefon_srv_xpub',  SRV_DEFAULTS.xpub,  'xpub_need_hex')
+  commitKey('#set-edpub', 'telefon_srv_edpub', SRV_DEFAULTS.edpub, 'edpub_need_hex')
 
   // ── Update ──
   q('#set-update').onclick = async () => {
