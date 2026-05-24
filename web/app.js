@@ -47,7 +47,6 @@ function applyI18n(root = document) {
 // button and the live connection-status pill).
 window.addEventListener('lui:lang', () => {
   applyI18n()
-  refreshInstallButtonLabel()
   refreshConnText()
 })
 
@@ -1618,20 +1617,13 @@ window.addEventListener('appinstalled', () => {
 })
 const NATIVE_APP = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function'
   && window.Capacitor.isNativePlatform())
-// The install/update button carries app-state, not a static data-i18n string:
-// in the native app it's "Update", in the browser PWA it's "Install". Set its
-// label here and re-set it on a live language switch (see the 'lui:lang' wire).
-function refreshInstallButtonLabel() {
-  const btn = $('btn-install')
-  if (!btn) return
-  btn.textContent = NATIVE_APP ? t('update_btn') : t('install')
-}
-refreshInstallButtonLabel()
-if (NATIVE_APP) {
-  // In the native app there's nothing to "install" — the button is repurposed
-  // as "Update" (check the server for a newer build and download it).
-} else if (matchMedia('(display-mode: standalone)').matches) {
-  $('btn-install').hidden = true  // installed PWA — nothing to install
+// The install button is a web-only icon: hidden in the native app (updating
+// lives in Settings → Check for updates) and in an already-installed PWA;
+// shown in a plain browser as an "Install" affordance.
+if (NATIVE_APP || matchMedia('(display-mode: standalone)').matches) {
+  $('btn-install').hidden = true
+} else {
+  $('btn-install').hidden = false
 }
 // In a mobile browser (not the native app), offer the APK download.
 if (!NATIVE_APP && /Android/.test(navigator.userAgent)) {
@@ -2626,6 +2618,7 @@ function openSettings() {
 
     <div class="set-sec">
       <h3>${escapeHtml(t('set_server'))}</h3>
+      <p class="muted" style="margin:4px 0 10px; line-height:1.4">${escapeHtml(t('server_hint'))}</p>
       <input id="set-url" class="input" type="text" placeholder="${escapeHtml(t('server_ph'))}" data-nopersist />
       <div class="set-row" style="margin-top:8px">
         <button id="set-srv-save"  class="btn btn-primary">${escapeHtml(t('srv_save'))}</button>
@@ -2642,10 +2635,8 @@ function openSettings() {
 
     <div class="set-sec">
       <h3>${escapeHtml(t('update'))}</h3>
-      <div class="set-row" style="justify-content:space-between">
-        <span class="muted">${escapeHtml(t('version', { ver: verNow }))}</span>
-        <button id="set-update" class="btn btn-ghost">${escapeHtml(t('check_update'))}</button>
-      </div>
+      <div class="muted" id="set-update-status" style="margin:0 0 8px; line-height:1.4"></div>
+      <button id="set-update" class="btn btn-ghost">${escapeHtml(t('check_update'))}</button>
     </div>
 
     <details class="set-sec set-danger">
@@ -2713,7 +2704,28 @@ function openSettings() {
   }
 
   // ── Update ──
-  q('#set-update').onclick = () => checkAndUpdate()
+  q('#set-update').onclick = async () => {
+    const btn = q('#set-update'), status = q('#set-update-status')
+    if (btn.classList.contains('loading')) return
+    btn.classList.add('loading')              // brandbook spinner on the button
+    status.textContent = ''
+    const prog = lui.progress.task().run(2000) // a short progress bar for the wait
+    const cur = (verNow || '').trim()
+    let latest = '', failed = false
+    try {
+      const r = await fetch('https://tele.karlson.ru/apk/version.txt?t=' + Date.now())
+      latest = (await r.text()).trim()
+    } catch { failed = true }
+    prog.done()
+    btn.classList.remove('loading')
+    if (failed)          { status.textContent = t('update_check_failed'); return }
+    if (!latest)         { status.textContent = t('version_not_found'); return }
+    if (latest === cur)  { status.textContent = t('up_to_date', { ver: cur }); return }
+    status.textContent = t('new_version_avail', { latest })
+    if (confirm(t('new_version_q', { latest, cur }))) {
+      window.open('https://tele.karlson.ru/apk/telefon-latest.apk?t=' + Date.now(), '_system')
+    }
+  }
 
   // ── Wipe identity (guarded by lui.confirm) ──
   const askWipe = () => {
