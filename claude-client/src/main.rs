@@ -551,7 +551,12 @@ async fn handle_incoming(
 
     if cmd == CMD_TEXT && body.len() >= 16 {
         let text = String::from_utf8_lossy(&body[16..]).to_string();
-        println!("{}: {}", peer.nick, text);
+        // Prefix EVERY line with the nick so multi-line messages aren't lost by
+        // line-based log filters (a bare continuation line would otherwise be
+        // dropped by `grep "<nick>:"`). One physical log line = one matchable line.
+        for line in text.split('\n') {
+            println!("{}: {}", peer.nick, line);
+        }
         let _ = std::io::stdout().flush();
         // Acknowledge delivery, then read (we display incoming immediately).
         for ack_cmd in [CMD_DELIVERY_ACK, CMD_READ_ACK] {
