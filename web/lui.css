@@ -1,0 +1,478 @@
+/* ============================================================================
+   lui — Lleo UI. Vanilla CSS design system (no deps).
+   Soul of ЗАМОК 4.0 (white canvas, orange-red accents, air, pictograms, tap
+   feedback) re-dressed modern: clean font, thin lines, soft shadows, neat radii.
+   Pair with lui.js. Works on web and inside Capacitor WebViews.
+   ============================================================================ */
+
+:root {
+  /* Palette: white canvas + orange-red soul */
+  --bg:        #ffffff;
+  --bg-soft:   #fbf7f4;     /* slightly warm off-white for sections */
+  --ink:       #1c1a18;     /* almost-black text, not pure #000 */
+  --ink-soft:  #6b6560;     /* muted text/captions */
+  --line:      #ece7e2;     /* thin dividers */
+
+  --accent:    #ff6200;     /* orange — primary accent */
+  --accent-2:  #ff8f00;     /* warmer/lighter — for gradient/shadow */
+  --danger:    #e53935;     /* red — dangerous actions */
+  --danger-d:  #c62828;
+
+  /* Geometry */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 18px;
+  --gap:  16px;
+
+  /* Soft shadows (not harsh 16px) */
+  --sh-1: 0 1px 2px rgba(28,26,24,.06), 0 1px 3px rgba(28,26,24,.08);
+  --sh-2: 0 4px 12px rgba(28,26,24,.10), 0 2px 4px rgba(28,26,24,.06);
+  --sh-3: 0 12px 32px rgba(28,26,24,.16), 0 4px 8px rgba(28,26,24,.08);
+
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter",
+          system-ui, sans-serif;
+}
+
+/* ── Dark theme: html[data-theme="dark"] flips the palette; orange-red accent
+   stays. Set via lui.theme('dark'|'light'|'auto'). ─────────────────────────── */
+html[data-theme="dark"] {
+  --bg:        #15171c;
+  --bg-soft:   #1d2026;
+  --ink:       #e9e6e2;
+  --ink-soft:  #9a948c;
+  --line:      #2c303a;
+  --danger:    #ff5b54;     /* a touch brighter so it reads on dark */
+  --danger-d:  #e0463f;
+  --sh-1: 0 1px 2px rgba(0,0,0,.45), 0 1px 3px rgba(0,0,0,.55);
+  --sh-2: 0 4px 12px rgba(0,0,0,.55), 0 2px 4px rgba(0,0,0,.45);
+  --sh-3: 0 12px 32px rgba(0,0,0,.65), 0 4px 8px rgba(0,0,0,.5);
+}
+/* Components whose colors aren't pure variables need a small dark touch-up */
+html[data-theme="dark"] .toast { background: #2a2e37; color: #fff; }
+html[data-theme="dark"] .btn-ghost { background: var(--bg-soft); }
+html[data-theme="dark"] .input { background: #11131a; }
+html[data-theme="dark"] .input:focus { background: #0d0f15; }
+html[data-theme="dark"] .progress .pct { background: rgba(20,22,28,.9); color: #ff8f5a; }
+html[data-theme="dark"] img.logo-mono { filter: invert(1); }   /* black penguin → white on dark */
+/* Windows on dark: lift above the background so they clearly read as windows —
+   lighter fill than the page, a visible edge, and a faint light rim. */
+html[data-theme="dark"] .win,
+html[data-theme="dark"] .confirm {
+  background: #232730;                              /* lighter than page (#15171c) → window pops */
+  border: 1px solid #3a4150;                        /* visible edge */
+  box-shadow: 0 0 0 1px rgba(255,255,255,.05), var(--sh-3);
+}
+html[data-theme="dark"] .win-bar {
+  border-bottom-color: #353b46;
+  background: linear-gradient(0deg, #232730, #2a2f39);
+}
+html[data-theme="dark"] .scrim { background: rgba(0,0,0,.62); }   /* push page toward deeper black so the window separates */
+
+* { box-sizing: border-box; }
+
+/* ── Reduced motion: kill animations/transitions when the user opted out, either
+   via the OS setting (prefers-reduced-motion) or via lui.setMotion(false), which
+   adds html.lui-no-motion. We don't hard-zero to 0s (that can skip 'animationend'
+   handlers) but to a near-instant .001ms. ─────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+}
+html.lui-no-motion *, html.lui-no-motion *::before, html.lui-no-motion *::after {
+  animation-duration: .001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: .001ms !important;
+}
+
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Typography: light, not heavy ─────────────────────────────────────────── */
+h1, h2, h3 { margin: 0 0 .4em; font-weight: 650; letter-spacing: -.01em; }
+h1 { font-size: 2rem; }
+h2 { font-size: 1.25rem; }
+h3 { font-size: 1rem; color: var(--ink-soft); font-weight: 600;
+     text-transform: uppercase; letter-spacing: .06em; font-size: .8rem; }
+.muted { color: var(--ink-soft); }
+a { color: var(--accent); text-decoration: none; }
+
+/* logo/title: character without Impact — large weight + light warm accent */
+.brand { font-weight: 800; letter-spacing: -.02em; font-size: 1.6rem; }
+.brand .dot { color: var(--accent); }
+
+/* ── Layout ───────────────────────────────────────────────────────────────── */
+.wrap { max-width: 720px; margin: 0 auto; padding: 28px 20px 80px; }
+.section { margin: 36px 0; }
+.row { display: flex; gap: var(--gap); flex-wrap: wrap; align-items: center; }
+.spacer { height: 1px; background: var(--line); margin: 28px 0; border: 0; }
+
+/* ── Cards: air, thin line, soft shadow ───────────────────────────────────── */
+.card {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 20px;
+  box-shadow: var(--sh-1);
+}
+
+/* ── Buttons: ripple + light scale on tap, spinner while waiting ──────────── */
+.btn {
+  position: relative; overflow: hidden;
+  display: inline-flex; align-items: center; gap: .5em;
+  font: inherit; font-weight: 600;
+  padding: .7em 1.25em;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: transform .08s ease, box-shadow .15s ease, background .15s ease;
+  user-select: none;
+}
+.btn:active { transform: scale(.96); }            /* tap feedback */
+.btn-primary { background: var(--accent); color: #fff; box-shadow: var(--sh-1); }
+.btn-primary:hover { box-shadow: var(--sh-2); }
+.btn-ghost   { background: var(--bg); color: var(--ink); border-color: var(--line); }
+.btn-ghost:hover { border-color: #d8d2cc; }
+.btn-danger  { background: var(--danger); color: #fff; }
+.btn-danger:hover { background: var(--danger-d); }
+
+/* ripple wave (JS adds a .ripple span) */
+.ripple {
+  position: absolute; border-radius: 50%; transform: scale(0);
+  background: rgba(255,255,255,.5); pointer-events: none;
+  animation: ripple .5s ease-out forwards;
+}
+@keyframes ripple { to { transform: scale(2.4); opacity: 0; } }
+
+/* spinner inside a button while a request runs */
+.btn.loading { pointer-events: none; color: transparent; }
+.btn.loading::after {
+  content: ""; position: absolute; inset: 0; margin: auto;
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,.5); border-top-color: #fff;
+  animation: spin .7s linear infinite;
+}
+.btn-ghost.loading::after { border-color: rgba(28,26,24,.2); border-top-color: var(--ink); }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Pictogram tiles (like thmbn in ЗАМОК, but softer) ────────────────────── */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px,1fr)); gap: 14px; }
+.tile {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 16px 8px; border-radius: var(--r-md);
+  border: 1px solid var(--line); background: var(--bg);
+  cursor: pointer; transition: transform .12s ease, box-shadow .15s ease, border-color .15s;
+}
+.tile:hover { transform: translateY(-2px); box-shadow: var(--sh-2); border-color: #e3ddd6; }
+.tile:active { transform: scale(.97); }
+.tile .emo { font-size: 30px; line-height: 1; }
+.tile .lbl { font-size: .78rem; color: var(--ink-soft); }
+
+/* ── Input fields ─────────────────────────────────────────────────────────── */
+.input {
+  width: 100%; font: inherit; padding: .65em .8em;
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--bg-soft); color: var(--ink);
+  transition: border-color .15s, box-shadow .15s;
+}
+.input:focus { outline: none; border-color: var(--accent);
+               box-shadow: 0 0 0 3px rgba(255,98,0,.12); background: #fff; }
+
+/* ── Swatches (show the palette) ──────────────────────────────────────────── */
+.swatches { display: flex; gap: 10px; flex-wrap: wrap; }
+.swatch { width: 84px; height: 56px; border-radius: var(--r-md); border: 1px solid var(--line);
+          display: flex; align-items: flex-end; padding: 6px; font-size: .68rem; color: #fff; }
+
+/* ============================================================================
+   TABS — orange underline on active, smooth slide, panels switch.
+   Markup: .tabs > .tab-bar > button[data-tab="id"]  +  .tab-panel[data-panel="id"]
+   ============================================================================ */
+.tabs { }
+.tab-bar {
+  display: flex; gap: 4px; position: relative;
+  border-bottom: 1px solid var(--line);
+}
+.tab-bar button {
+  font: inherit; font-weight: 600; color: var(--ink-soft);
+  background: transparent; border: 0; cursor: pointer;
+  padding: .6em 1em; position: relative;
+  transition: color .15s ease;
+}
+.tab-bar button:hover { color: var(--ink); }
+.tab-bar button.active { color: var(--accent); }
+/* sliding underline indicator (JS positions .tab-ink) */
+.tab-bar .tab-ink {
+  position: absolute; bottom: -1px; left: 0; height: 2px; width: 0;
+  background: var(--accent); border-radius: 2px;
+  transition: left .22s cubic-bezier(.2,.8,.3,1), width .22s cubic-bezier(.2,.8,.3,1);
+}
+.tab-panels { padding-top: 14px; }
+.tab-panel { display: none; animation: tab-fade .2s ease; }
+.tab-panel.active { display: block; }
+@keyframes tab-fade { from { opacity: 0; transform: translateY(4px); } }
+
+/* ============================================================================
+   DROPDOWN MENU (lui.dropdown) — context-style menu under a trigger.
+   ============================================================================ */
+.lui-menu {
+  position: fixed; z-index: 750; min-width: 180px;
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: var(--r-md); box-shadow: var(--sh-3);
+  padding: 6px; overflow: hidden;
+  animation: menu-in .14s ease;
+}
+@keyframes menu-in { from { opacity: 0; transform: translateY(-6px); } }
+.lui-menu .item {
+  display: flex; align-items: center; gap: 10px;
+  padding: .55em .7em; border-radius: var(--r-sm);
+  cursor: pointer; font-size: .92rem; color: var(--ink);
+  transition: background .12s ease;
+  user-select: none;
+}
+.lui-menu .item:hover,
+.lui-menu .item:focus-visible { background: var(--bg-soft); outline: none; }
+.lui-menu .item.danger { color: var(--danger); }
+.lui-menu .item.danger:hover { background: #fdeceb; }
+.lui-menu .item .ico { width: 1.2em; text-align: center; flex: 0 0 auto; }
+.lui-menu .sep { height: 1px; background: var(--line); margin: 5px 2px; }
+
+/* ── Styled native <select> via .select wrapper ──────────────────────────── */
+.select { position: relative; display: inline-flex; }
+.select::after {
+  content: ""; position: absolute; right: .85em; top: 50%;
+  width: 8px; height: 8px; margin-top: -6px;
+  border-right: 2px solid var(--ink-soft); border-bottom: 2px solid var(--ink-soft);
+  transform: rotate(45deg); pointer-events: none;
+  transition: border-color .15s;
+}
+.select select {
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  font: inherit; color: var(--ink); cursor: pointer;
+  padding: .65em 2.4em .65em .8em;
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--bg-soft); width: 100%;
+  transition: border-color .15s, box-shadow .15s;
+}
+.select select:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(255,98,0,.12); background: #fff;
+}
+.select:focus-within::after { border-color: var(--accent); }
+
+/* ============================================================================
+   CHECKBOX (.check) and TOGGLE (.toggle) — orange when on. Native input inside
+   a <label> wrapper, accessible, works without JS.
+   ============================================================================ */
+/* Checkbox: square with a check mark */
+.check {
+  display: inline-flex; align-items: center; gap: 10px;
+  cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+}
+.check > input { position: absolute; opacity: 0; width: 0; height: 0; }
+.check .box {
+  width: 20px; height: 20px; flex: 0 0 auto;
+  border: 1px solid #cfc8c1; border-radius: 6px;
+  background: var(--bg); position: relative;
+  transition: background .15s, border-color .15s;
+}
+.check .box::after {            /* the check mark */
+  content: ""; position: absolute; left: 6px; top: 2px;
+  width: 5px; height: 10px;
+  border: solid #fff; border-width: 0 2px 2px 0;
+  transform: rotate(45deg) scale(0);
+  transition: transform .15s ease;
+}
+.check > input:checked + .box {
+  background: var(--accent); border-color: var(--accent);
+}
+.check > input:checked + .box::after { transform: rotate(45deg) scale(1); }
+.check > input:focus-visible + .box {
+  box-shadow: 0 0 0 3px rgba(255,98,0,.18);
+}
+.check > input:disabled + .box { opacity: .45; }
+.check > input:disabled ~ .lbl { opacity: .45; }
+
+/* Toggle: sliding switch */
+.toggle {
+  display: inline-flex; align-items: center; gap: 10px;
+  cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+}
+.toggle > input { position: absolute; opacity: 0; width: 0; height: 0; }
+.toggle .track {
+  width: 40px; height: 22px; flex: 0 0 auto;
+  border-radius: 999px; background: #d8d2cc;
+  position: relative; transition: background .18s ease;
+}
+.toggle .track::after {        /* the knob */
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; box-shadow: var(--sh-1);
+  transition: transform .18s cubic-bezier(.2,.8,.3,1.2);
+}
+.toggle > input:checked + .track { background: var(--accent); }
+.toggle > input:checked + .track::after { transform: translateX(18px); }
+.toggle > input:focus-visible + .track {
+  box-shadow: 0 0 0 3px rgba(255,98,0,.18);
+}
+.toggle > input:disabled + .track { opacity: .45; }
+
+/* ============================================================================
+   TOOLTIP (data-tip="...") — small dark bubble with an arrow, shown on hover
+   (desktop) / long-press (mobile). One delegated handler in lui.js.
+   ============================================================================ */
+.lui-tip {
+  position: fixed; z-index: 950; max-width: 240px;
+  background: var(--ink); color: #fff;
+  font-size: .8rem; line-height: 1.35; font-weight: 500;
+  padding: .45em .65em; border-radius: var(--r-sm);
+  box-shadow: var(--sh-2); pointer-events: none;
+  opacity: 0; transform: translateY(4px);
+  transition: opacity .14s ease, transform .14s ease;
+}
+.lui-tip.on { opacity: 1; transform: translateY(0); }
+.lui-tip::after {            /* arrow — --ax set by lui.js to point at target */
+  content: ""; position: absolute; left: var(--ax, 50%); width: 8px; height: 8px;
+  background: var(--ink); transform: translateX(-50%) rotate(45deg);
+}
+.lui-tip.below::after { top: -4px; }
+.lui-tip.above::after { bottom: -4px; }
+
+/* ============================================================================
+   WINDOW-LAYER SYSTEM (heir of .pop2): modern — thin border, soft shadow,
+   drag by titlebar, layers dim those below, inactive ones desaturate.
+   ============================================================================ */
+.scrim {                       /* dimming + blur under the top window/confirm */
+  position: fixed; inset: 0; background: rgba(28,26,24,.34);
+  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+  opacity: 0; pointer-events: none;
+  transition: opacity .2s ease; z-index: 500;
+}
+.scrim.on { opacity: 1; pointer-events: auto; }
+
+.win {
+  position: fixed; z-index: 600;
+  min-width: 280px; max-width: min(92vw, 460px);
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: var(--r-lg); box-shadow: var(--sh-3);
+  overflow: hidden;
+  animation: win-in .18s ease;
+  transition: filter .2s ease, opacity .2s ease;
+}
+@keyframes win-in { from { transform: translateY(8px) scale(.98); opacity: 0; } }
+.win:focus, .confirm:focus { outline: none; }   /* a11y: focus the container w/o a ring around the whole box */
+.win.inactive { filter: saturate(.5) brightness(.99); opacity: .9; }   /* inactive ones dimmer */
+.win.dragging { filter: opacity(.85) blur(.3px); cursor: grabbing; }    /* dim while dragging */
+
+.win-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 14px; cursor: grab; user-select: none;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(0deg, var(--bg), var(--bg-soft));
+}
+.win-bar .grab { display: none; }   /* legacy bottom-sheet handle, kept hidden */
+.win-bar .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
+.win-bar .ttl { font-weight: 650; font-size: .95rem; }
+.win-bar .x {
+  margin-left: auto; width: 28px; height: 28px; border-radius: 50%;
+  display: grid; place-items: center; cursor: pointer; color: var(--ink-soft);
+  transition: background .15s, color .15s;
+  /* reset <button> defaults (it used to be a <span>) */
+  border: 0; background: transparent; font: inherit; font-size: 1rem; padding: 0;
+}
+.win-bar .x:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(255,98,0,.4); }
+.win-bar .x:hover { background: #f4eee8; color: var(--danger); }
+.win-body { padding: 16px; }
+
+/* ── Centered confirm (important "Delete keys?") ──────────────────────────── */
+.confirm {
+  position: fixed; z-index: 700; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(90vw, 360px);
+  background: var(--bg); border-radius: var(--r-lg);
+  box-shadow: var(--sh-3); overflow: hidden; text-align: center;
+  animation: pop-in .2s cubic-bezier(.2,.8,.3,1.2);
+}
+@keyframes pop-in { from { transform: translate(-50%,-50%) scale(.85); opacity: 0; } }
+.confirm .head { padding: 22px 20px 6px; font-size: 2rem; }   /* big pictogram */
+.confirm h2 { padding: 0 20px; }
+.confirm p { padding: 0 20px 16px; color: var(--ink-soft); margin: 0; }
+.confirm .actions { display: flex; border-top: 1px solid var(--line); }
+.confirm .actions .btn { flex: 1; border-radius: 0; border: 0; justify-content: center; padding: 14px; }
+.confirm .actions .btn + .btn { border-left: 1px solid var(--line); }
+
+/* ── Toast ────────────────────────────────────────────────────────────────── */
+.toast {
+  /* keep clear of the phone's home-indicator / gesture bar via the safe-area inset */
+  position: fixed; left: 50%; bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%) translateY(20px);
+  background: var(--ink); color: #fff; padding: .7em 1.1em; border-radius: 999px;
+  font-size: .9rem; box-shadow: var(--sh-3); opacity: 0; pointer-events: none;
+  transition: opacity .2s, transform .2s; z-index: 800;
+}
+.toast.on { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ── Progress bar: thin orange-red strip on top ───────────────────────────── */
+.progress {
+  position: fixed; bottom: env(safe-area-inset-bottom, 0); left: 0; height: 3px; width: 0;
+  background: linear-gradient(90deg, var(--accent), var(--danger));
+  box-shadow: 0 0 8px rgba(255,98,0,.6);
+  z-index: 900; pointer-events: none;
+  transition: width .18s linear, opacity .35s ease;
+}
+.progress.done { opacity: 0; }              /* fades out on completion */
+.progress .pct {                            /* percent, if there is room */
+  position: fixed; bottom: calc(6px + env(safe-area-inset-bottom, 0px)); right: 10px;
+  font-size: .72rem; font-weight: 700;
+  color: var(--danger); background: rgba(255,255,255,.85);
+  padding: 1px 6px; border-radius: 999px; z-index: 901;
+}
+
+/* ============================================================================
+   MOBILE ADAPTATION: windows are not dragged and do not switch — they are a
+   centered modal stack. Each new window dims+blurs everything below it (shared
+   .scrim). A window of any length scrolls INSIDE itself (fixed bar on top,
+   scrollable body), never overflowing the screen. Closed in reverse order via
+   the ✕ or the Android system "back" button. Confirms stay centered too.
+   ============================================================================ */
+@media (max-width: 640px) {
+  .win {
+    /* centered modal, like .confirm */
+    left: 50% !important; top: 50% !important; right: auto; bottom: auto;
+    transform: translate(-50%, -50%);
+    width: min(92vw, 460px); max-width: 92vw;
+    /* never overflow the viewport — body scrolls inside. Subtract the device
+       safe-area insets so a tall centered window never tucks under the notch
+       or the home-indicator / gesture bar. */
+    max-height: calc(85vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    display: flex; flex-direction: column;
+    border-radius: var(--r-lg);
+    animation: win-pop .22s cubic-bezier(.2,.8,.3,1.2);
+  }
+  @keyframes win-pop { from { transform: translate(-50%,-50%) scale(.9); opacity: 0; } }
+  .win.inactive { filter: none; opacity: 1; }   /* no desaturate on mobile */
+  .win-bar {
+    cursor: default; flex: 0 0 auto;            /* titlebar pinned at the top */
+  }
+  .win-body {
+    flex: 1 1 auto; overflow-y: auto;           /* the body is what scrolls */
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* ── Doc page helpers (used by the showcase index.html) ───────────────────── */
+pre.code, code.code {
+  font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: .82rem; background: var(--bg-soft); color: var(--ink);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+pre.code { padding: 10px 12px; margin: 10px 0 0; overflow-x: auto; line-height: 1.5; }
+code.code { padding: .12em .4em; }

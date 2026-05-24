@@ -12,6 +12,33 @@
   <link rel="icon" type="image/x-icon" href="favicon.ico" />
   <link rel="apple-touch-icon" href="apple-touch-icon.png" />
   <link rel="stylesheet" href="style.css" />
+  <!-- lui design library (loaded after style.css; telefon's own dark base is
+       preserved below, lui classes are used for the settings window). -->
+  <link rel="stylesheet" href="lui.css" />
+  <style>
+    /* Keep telefon's dark chrome intact regardless of the lui light/dark theme:
+       lui.css sets html/body to its themed canvas, but telefon paints its own
+       dark background and full-screen .screen panels. We pin the page canvas to
+       telefon's dark color so there is no white flash and the main UI is
+       untouched. lui windows/confirms still follow lui.theme(). */
+    html, body { background: #1a1d22; color: #e8eaed; }
+  </style>
+  <script>
+    /* Apply lui theme + language before first paint — no flash, correct lang.
+       (Mirrors the lui showcase snippet.) */
+    (function () {
+      var s = localStorage.getItem('lui-theme');
+      var d = s ? s === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = d ? 'dark' : 'light';
+      var L = ['en', 'ru', 'uk'];
+      var lg = localStorage.getItem('lui-lang');
+      if (!lg || L.indexOf(lg) < 0) {
+        lg = (navigator.language || 'en').slice(0, 2).toLowerCase();
+        if (L.indexOf(lg) < 0) lg = 'en';
+      }
+      document.documentElement.lang = lg;
+    })();
+  </script>
   <script>
     // Visible crash overlay — surfaces startup errors that are otherwise
     // invisible inside the Capacitor WebView. Silent when nothing throws.
@@ -241,6 +268,7 @@
   <div id="toasts" class="toasts"></div>
 
   <script src="./DB.js"></script>
+  <script src="./lui.js"></script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>

@@ -396,7 +396,9 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   display: flex; flex-direction: column; gap: .5rem; align-items: center;
   pointer-events: none;
 }
-.toast {
+/* Scoped to the #toasts container so it never collides with lui's own
+ * body-level .toast (lui appends its toast directly to <body>). */
+.toasts .toast {
   background: #2f343a; color: #e8eaed;
   padding: .6rem 1rem; border-radius: 8px;
   border-left: 3px solid #3a6ea5;
@@ -404,8 +406,8 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   animation: toast-in .2s ease-out;
   pointer-events: auto; cursor: pointer;
 }
-.toast.error   { border-left-color: #b03030 }
-.toast.success { border-left-color: #3a9a3a }
+.toasts .toast.error   { border-left-color: #b03030 }
+.toasts .toast.success { border-left-color: #3a9a3a }
 @keyframes toast-in {
   from { transform: translateX(20px); opacity: 0 }
   to   { transform: translateX(0);    opacity: 1 }
