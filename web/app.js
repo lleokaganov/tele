@@ -619,8 +619,10 @@ function resetCallButtons(state) {
   // Window header: live state + peer name. The window can outlive currentPeerId
   // (the user may navigate away during a call), so fall back gracefully.
   $('cw-state').textContent = state
-  $('cw-peer').textContent  = (peerBook[currentPeerId]?.label)
-    || (currentPeerId ? currentPeerId.slice(0, 8) : '')
+  // Keep the last known name if we've navigated away (currentPeerId cleared)
+  // mid-call — don't blank the header on a later state change.
+  const lbl = (peerBook[currentPeerId]?.label) || (currentPeerId ? currentPeerId.slice(0, 8) : '')
+  if (lbl) $('cw-peer').textContent = lbl
 }
 
 /* =================================== chat =================================== */
