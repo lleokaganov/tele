@@ -1118,7 +1118,7 @@ function updateMessageBody(msgId, newBody) {
   if (!row.querySelector('.msg-edited')) {
     const tag = document.createElement('span')
     tag.className = 'msg-edited'
-    tag.textContent = ' (edited)'
+    tag.textContent = t('edited')
     span.appendChild(tag)
   } else {
     span.appendChild(row.querySelector('.msg-edited'))
@@ -1535,7 +1535,7 @@ async function registerFcm() {
       PushNotifications.addListener('pushNotificationReceived', (notif) => {
         console.log('fcm push received (foreground):', notif)
         const title = notif?.title || notif?.data?.title || 'telefon'
-        const body  = notif?.body  || notif?.data?.body  || 'New message'
+        const body  = notif?.body  || notif?.data?.body  || t('new_message')
         try {
           const LN = window.Capacitor?.Plugins?.LocalNotifications
           if (LN) {
@@ -2294,7 +2294,7 @@ let statsTimer = null
 async function refreshStats() {
   const ov = $('stats-overlay')
   const s = await call.getStats()
-  if (!s) { ov.textContent = '(no active session)'; return }
+  if (!s) { ov.textContent = t('no_session'); return }
   const path = `${s.local} → ${s.remote}`
   const link = s.local === 'relay' || s.remote === 'relay' ? 'via TURN' : 'direct'
   ov.textContent =
@@ -2686,14 +2686,14 @@ function openSettings() {
     url && url !== dUrl               ? localStorage.setItem('telefon_ws_url', url)   : localStorage.removeItem('telefon_ws_url')
     xp  && xp  !== SRV_DEFAULTS.xpub  ? localStorage.setItem('telefon_srv_xpub', xp)  : localStorage.removeItem('telefon_srv_xpub')
     ep  && ep  !== SRV_DEFAULTS.edpub ? localStorage.setItem('telefon_srv_edpub', ep) : localStorage.removeItem('telefon_srv_edpub')
-    toast('Сохранено, перезапуск…', 'success')
+    toast(t('saved_restart'), 'success')
     setTimeout(() => location.reload(), 600)
   }
   q('#set-srv-reset').onclick = () => {
     localStorage.removeItem('telefon_ws_url')
     localStorage.removeItem('telefon_srv_xpub')
     localStorage.removeItem('telefon_srv_edpub')
-    toast('Сброшено на сервер по умолчанию, перезапуск…', 'success')
+    toast(t('reset_restart'), 'success')
     setTimeout(() => location.reload(), 600)
   }
 
@@ -2704,10 +2704,10 @@ function openSettings() {
   const askWipe = () => {
     lui.confirm({
       icon: '🗑️',
-      title: 'Wipe identity?',
-      text: 'All contacts AND chat history will be lost — your friends will no longer recognise you.',
+      title: t('wipe_q'),
+      text: t('wipe_q_text'),
       danger: true,
-      ok: 'Wipe',
+      ok: t('wipe'),
       cancel: lui.t('cancel'),
     }, wipeIdentity)
   }
@@ -2725,3 +2725,7 @@ $('btn-settings').onclick = openSettings
 initDraggablePip()
 // Make the minimized call window draggable across the viewport (tap = expand).
 initCallWindowDrag()
+
+// Translate the static markup into the current language now that everything is
+// wired. Subsequent language changes are handled by the 'lui:lang' listener up top.
+applyI18n()

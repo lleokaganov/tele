@@ -48,6 +48,7 @@
       search_placeholder: 'Search messages',
       close_search: 'close search',
       editing_message: '✏️ Editing message',
+      edited: ' (edited)',
       cancel_edit: 'cancel edit',
       attach_file: 'Attach file',
       msg_placeholder: 'message',
@@ -71,6 +72,7 @@
       delete: 'Delete',
       // incoming call dialog
       incoming_call: '📞 Incoming call',
+      new_message: 'New message',
       decline: 'Decline',
       accept: 'Accept',
       // call window
@@ -83,6 +85,11 @@
       video: '🎥 Video',
       video_off: '📷 Video off',
       camera: '↻ Camera',
+      dev_camera: 'Camera',
+      dev_mic: 'Microphone',
+      spk_loud: 'Loud',
+      spk_earpiece: 'Earpiece',
+      spk_output: 'output',
       conn_stats: 'connection stats',
       no_session: '(no active session)',
       // lightbox
@@ -210,6 +217,7 @@
       search_placeholder: 'Buscar mensajes',
       close_search: 'cerrar búsqueda',
       editing_message: '✏️ Editando mensaje',
+      edited: ' (editado)',
       cancel_edit: 'cancelar edición',
       attach_file: 'Adjuntar archivo',
       msg_placeholder: 'mensaje',
@@ -228,6 +236,7 @@
       del_contact_text_named: '¿Eliminar "{name}" y todos los mensajes y archivos? Esto no se puede deshacer.',
       delete: 'Eliminar',
       incoming_call: '📞 Llamada entrante',
+      new_message: 'Nuevo mensaje',
       decline: 'Rechazar',
       accept: 'Aceptar',
       minimize: 'minimizar',
@@ -239,6 +248,11 @@
       video: '🎥 Vídeo',
       video_off: '📷 Vídeo apagado',
       camera: '↻ Cámara',
+      dev_camera: 'Cámara',
+      dev_mic: 'Micrófono',
+      spk_loud: 'Altavoz',
+      spk_earpiece: 'Auricular',
+      spk_output: 'salida',
       conn_stats: 'estadísticas de conexión',
       no_session: '(no hay sesión activa)',
       close: 'cerrar',
@@ -353,6 +367,7 @@
       search_placeholder: '搜索消息',
       close_search: '关闭搜索',
       editing_message: '✏️ 正在编辑消息',
+      edited: '（已编辑）',
       cancel_edit: '取消编辑',
       attach_file: '附加文件',
       msg_placeholder: '消息',
@@ -371,6 +386,7 @@
       del_contact_text_named: '删除 "{name}" 以及所有消息和文件？此操作无法撤销。',
       delete: '删除',
       incoming_call: '📞 来电',
+      new_message: '新消息',
       decline: '拒绝',
       accept: '接听',
       minimize: '最小化',
@@ -382,6 +398,11 @@
       video: '🎥 视频',
       video_off: '📷 视频已关',
       camera: '↻ 摄像头',
+      dev_camera: '摄像头',
+      dev_mic: '麦克风',
+      spk_loud: '扬声器',
+      spk_earpiece: '听筒',
+      spk_output: '输出',
       conn_stats: '连接统计',
       no_session: '(无活动会话)',
       close: '关闭',
@@ -496,6 +517,7 @@
       search_placeholder: '메시지 검색',
       close_search: '검색 닫기',
       editing_message: '✏️ 메시지 편집 중',
+      edited: ' (편집됨)',
       cancel_edit: '편집 취소',
       attach_file: '파일 첨부',
       msg_placeholder: '메시지',
@@ -514,6 +536,7 @@
       del_contact_text_named: '"{name}" 및 모든 메시지와 파일을 삭제할까요? 되돌릴 수 없습니다.',
       delete: '삭제',
       incoming_call: '📞 수신 전화',
+      new_message: '새 메시지',
       decline: '거절',
       accept: '수락',
       minimize: '최소화',
@@ -525,6 +548,11 @@
       video: '🎥 영상',
       video_off: '📷 영상 꺼짐',
       camera: '↻ 카메라',
+      dev_camera: '카메라',
+      dev_mic: '마이크',
+      spk_loud: '스피커',
+      spk_earpiece: '수화기',
+      spk_output: '출력',
       conn_stats: '연결 통계',
       no_session: '(활성 세션 없음)',
       close: '닫기',
@@ -639,6 +667,7 @@
       search_placeholder: 'Hae viestejä',
       close_search: 'sulje haku',
       editing_message: '✏️ Muokataan viestiä',
+      edited: ' (muokattu)',
       cancel_edit: 'peruuta muokkaus',
       attach_file: 'Liitä tiedosto',
       msg_placeholder: 'viesti',
@@ -657,6 +686,7 @@
       del_contact_text_named: 'Poistetaanko "{name}" sekä kaikki viestit ja tiedostot? Tätä ei voi kumota.',
       delete: 'Poista',
       incoming_call: '📞 Saapuva puhelu',
+      new_message: 'Uusi viesti',
       decline: 'Hylkää',
       accept: 'Vastaa',
       minimize: 'pienennä',
@@ -668,6 +698,11 @@
       video: '🎥 Video',
       video_off: '📷 Video pois',
       camera: '↻ Kamera',
+      dev_camera: 'Kamera',
+      dev_mic: 'Mikrofoni',
+      spk_loud: 'Kaiutin',
+      spk_earpiece: 'Kuuloke',
+      spk_output: 'ulostulo',
       conn_stats: 'yhteystilastot',
       no_session: '(ei aktiivista istuntoa)',
       close: 'sulje',
@@ -782,6 +817,7 @@
       search_placeholder: 'Поиск сообщений',
       close_search: 'закрыть поиск',
       editing_message: '✏️ Редактирование сообщения',
+      edited: ' (изменено)',
       cancel_edit: 'отменить редактирование',
       attach_file: 'Прикрепить файл',
       msg_placeholder: 'сообщение',
@@ -800,6 +836,7 @@
       del_contact_text_named: 'Удалить «{name}» и все сообщения и файлы? Это нельзя отменить.',
       delete: 'Удалить',
       incoming_call: '📞 Входящий звонок',
+      new_message: 'Новое сообщение',
       decline: 'Отклонить',
       accept: 'Принять',
       minimize: 'свернуть',
@@ -811,6 +848,11 @@
       video: '🎥 Видео',
       video_off: '📷 Видео выкл',
       camera: '↻ Камера',
+      dev_camera: 'Камера',
+      dev_mic: 'Микрофон',
+      spk_loud: 'Динамик',
+      spk_earpiece: 'Разговорный',
+      spk_output: 'выход',
       conn_stats: 'статистика соединения',
       no_session: '(нет активной сессии)',
       close: 'закрыть',
@@ -925,6 +967,7 @@
       search_placeholder: 'Пошук повідомлень',
       close_search: 'закрити пошук',
       editing_message: '✏️ Редагування повідомлення',
+      edited: ' (змінено)',
       cancel_edit: 'скасувати редагування',
       attach_file: 'Прикріпити файл',
       msg_placeholder: 'повідомлення',
@@ -943,6 +986,7 @@
       del_contact_text_named: 'Видалити «{name}» та всі повідомлення й файли? Це не можна скасувати.',
       delete: 'Видалити',
       incoming_call: '📞 Вхідний дзвінок',
+      new_message: 'Нове повідомлення',
       decline: 'Відхилити',
       accept: 'Прийняти',
       minimize: 'згорнути',
@@ -954,6 +998,11 @@
       video: '🎥 Відео',
       video_off: '📷 Відео вимк',
       camera: '↻ Камера',
+      dev_camera: 'Камера',
+      dev_mic: 'Мікрофон',
+      spk_loud: 'Динамік',
+      spk_earpiece: 'Розмовний',
+      spk_output: 'вихід',
       conn_stats: 'статистика з’єднання',
       no_session: '(немає активної сесії)',
       close: 'закрити',
@@ -1059,5 +1108,23 @@
   // Extend lui's own component strings to the new languages first…
   for (const lang in LUI) window.lui.addDict(lang, LUI[lang])
   // …then register the telefon app strings into every language.
+  // addDict also appends each new code to lui's internal LANGS list, so the
+  // four new languages become selectable.
   for (const lang in T) window.lui.addDict(lang, T[lang])
+
+  // lui.js computes its current language at parse time, when only en/ru/uk were
+  // registered — so a previously-saved es/zh/ko/fi choice would have been
+  // rejected and fallen back to en. Now that all seven are registered, re-apply
+  // the saved choice (or the browser language) so the user's pick sticks across
+  // reloads. lui.lang() is a no-op if the code isn't a known language.
+  try {
+    const SUPPORTED = ['en', 'es', 'zh', 'ko', 'fi', 'ru', 'uk']
+    const saved = localStorage.getItem('lui-lang')
+    let want = saved && SUPPORTED.includes(saved) ? saved : null
+    if (!want) {
+      const nav = (navigator.language || 'en').slice(0, 2).toLowerCase()
+      want = SUPPORTED.includes(nav) ? nav : 'en'
+    }
+    if (want && want !== window.lui.lang()) window.lui.lang(want)
+  } catch {}
 })()

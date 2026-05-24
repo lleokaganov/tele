@@ -38,6 +38,18 @@ const DICT = {
   en: { copy: 'Copy', copied: 'Copied', cancel: 'Cancel', confirm: 'Confirm',
         ok: 'OK', close: 'Close', update: 'Update', done: 'Done', loading: 'Loading…',
         sure: 'Are you sure?', actions: 'Actions', theme: 'Light / dark theme' },
+  es: { copy: 'Copiar', copied: 'Copiado', cancel: 'Cancelar', confirm: 'Confirmar',
+        ok: 'OK', close: 'Cerrar', update: 'Actualizar', done: 'Listo', loading: 'Cargando…',
+        sure: '¿Estás seguro?', actions: 'Acciones', theme: 'Tema claro / oscuro' },
+  zh: { copy: '复制', copied: '已复制', cancel: '取消', confirm: '确认',
+        ok: '确定', close: '关闭', update: '更新', done: '完成', loading: '加载中…',
+        sure: '确定吗？', actions: '操作', theme: '浅色 / 深色主题' },
+  ko: { copy: '복사', copied: '복사됨', cancel: '취소', confirm: '확인',
+        ok: '확인', close: '닫기', update: '업데이트', done: '완료', loading: '로딩 중…',
+        sure: '확실합니까?', actions: '작업', theme: '밝은 / 어두운 테마' },
+  fi: { copy: 'Kopioi', copied: 'Kopioitu', cancel: 'Peruuta', confirm: 'Vahvista',
+        ok: 'OK', close: 'Sulje', update: 'Päivitä', done: 'Valmis', loading: 'Ladataan…',
+        sure: 'Oletko varma?', actions: 'Toiminnot', theme: 'Vaalea / tumma teema' },
   ru: { copy: 'Копировать', copied: 'Скопировано', cancel: 'Отмена', confirm: 'Подтвердить',
         ok: 'OK', close: 'Закрыть', update: 'Обновить', done: 'Готово', loading: 'Загрузка…',
         sure: 'Вы уверены?', actions: 'Действия', theme: 'Светлая / тёмная тема' },
@@ -45,7 +57,7 @@ const DICT = {
         ok: 'OK', close: 'Закрити', update: 'Оновити', done: 'Готово', loading: 'Завантаження…',
         sure: 'Ви впевнені?', actions: 'Дії', theme: 'Світла / темна тема' },
 }
-const LANGS = ['en', 'ru', 'uk']
+const LANGS = ['en', 'es', 'zh', 'ko', 'fi', 'ru', 'uk']
 function detectLang() {
   const saved = localStorage.getItem('lui-lang')
   if (saved && LANGS.includes(saved)) return saved
