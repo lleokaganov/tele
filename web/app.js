@@ -698,6 +698,14 @@ function resetMyVideoPos() {
   const v = $('my-video')
   v.style.left = v.style.top = v.style.right = v.style.bottom = ''
 }
+// Persisted mic/video toggle preferences (default ON, like theme/effects).
+function micPref()   { return localStorage.getItem('telefon_mic_on')   !== '0' }
+function videoPref() { return localStorage.getItem('telefon_video_on') !== '0' }
+function saveMicPref(on)   { localStorage.setItem('telefon_mic_on',   on ? '1' : '0') }
+function saveVideoPref(on) { localStorage.setItem('telefon_video_on', on ? '1' : '0') }
+// Whether the saved preference has been applied to the live call once already.
+let callPrefsApplied = false
+
 // Open the window EXPANDED — used at the very start of a call.
 function openCallWindowExpanded() {
   const w = $('call-window')
@@ -706,10 +714,12 @@ function openCallWindowExpanded() {
   w.classList.add('no-remote')   // self-view fills the window until the peer connects
   clearWinInline(w)
   resetMyVideoPos()
-  // Fresh call starts with mic + video ON, so the toggles reflect that.
+  // Reflect the persisted mic/video preferences in the toggles; the actual call
+  // tracks are aligned to these in onLocalStream once the local media arrives.
   const mt = $('mute-toggle'), vt = $('video-toggle')
-  if (mt) mt.checked = true
-  if (vt) vt.checked = true
+  if (mt) mt.checked = micPref()
+  if (vt) vt.checked = videoPref()
+  callPrefsApplied = false
 }
 // Just ensure the window is visible WITHOUT touching the mini/expanded state —
 // used by state updates so a user-chosen minimize survives later events.
@@ -1191,7 +1201,19 @@ function updateMessageBody(msgId, newBody) {
 
 const call = new CallManager(client, {
   log: (s) => console.log(s),
-  onLocalStream:  (s) => { $('my-video').srcObject = s   || null },
+  onLocalStream:  (s) => {
+    $('my-video').srcObject = s || null
+    // Apply persisted mic/video preferences to the live call once. _openMedia
+    // starts everything ON, so we only need to switch things OFF when the saved
+    // preference is OFF. Guarded by callPrefsApplied so a later device change
+    // (setVideoInput also fires onLocalStream) doesn't re-toggle.
+    if (s && !callPrefsApplied) {
+      callPrefsApplied = true
+      if (!micPref())   { call.toggleMute();  $('mute-toggle').checked  = false }
+      if (!videoPref()) { call.toggleVideo(); $('video-toggle').checked = false }
+    }
+    if (!s) callPrefsApplied = false   // reset on teardown
+  },
   onRemoteStream: (s) => {
     $('peer-video').srcObject = s || null
     // Until the remote video arrives the self-view fills the window (mirror to
@@ -2208,12 +2230,16 @@ $('switch-cam').onclick = () => call.switchCamera()
 // the checkbox is the negation of it (kept in sync even if the call flips it).
 $('mute-toggle').onchange = (e) => {
   const muted = call.toggleMute()
-  e.target.checked = !muted
+  const on = !muted
+  e.target.checked = on
+  saveMicPref(on)
 }
 // Video toggle: checked = video ON. toggleVideo() returns the new "off" state.
 $('video-toggle').onchange = (e) => {
   const off = call.toggleVideo()
-  e.target.checked = !off
+  const on = !off
+  e.target.checked = on
+  saveVideoPref(on)
 }
 
 /* Device selection moved into a single "Call settings" window (⚙). Camera,
