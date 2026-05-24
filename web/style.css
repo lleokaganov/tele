@@ -190,12 +190,6 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   padding: .5rem .7rem; border-radius: var(--r-sm);
   white-space: pre; pointer-events: none;
 }
-.resolution-select {
-  background: var(--bg-soft); color: var(--ink);
-  border: 1px solid var(--line); border-radius: var(--r-sm);
-  padding: .55rem .8rem; font: inherit; cursor: pointer;
-  min-width: 80px;
-}
 
 /* ── floating call window ─────────────────────────────────────────────────── */
 .call-window {
@@ -231,18 +225,44 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
 }
 .call-iconbtn:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .call-iconbtn-danger:hover { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+/* Compact single-row controls: hang up + mic/video toggles + flip + settings.
+   flex-wrap is a safety net for very narrow screens; normally it's one line. */
 .call-controls {
-  display: flex; gap: .5rem; padding: .75rem 1rem; flex-wrap: wrap;
+  display: flex; align-items: center; justify-content: center; gap: .4rem;
+  padding: .6rem .75rem; flex-wrap: wrap;
   background: var(--bg-soft); border-top: 1px solid var(--line);
-  padding-bottom: calc(.75rem + env(safe-area-inset-bottom));
+  padding-bottom: calc(.6rem + env(safe-area-inset-bottom));
 }
-.call-controls .btn { flex: 1; min-width: 90px; }
-/* Hang up is the most important control: big, bright, always on its own row at
-   the top of the controls, impossible to miss. */
-.call-controls #hangup-btn {
-  flex: 1 0 100%; order: -1;
-  font-size: 1.05rem; font-weight: 700; padding: .9rem;
+/* Round icon-only control button. */
+.callbtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; flex: 0 0 auto; padding: 0;
+  border: 0; border-radius: 50%; cursor: pointer;
+  background: transparent; color: var(--ink);
+  font-size: 1.2rem; line-height: 1;
+  -webkit-tap-highlight-color: transparent;
+}
+.callbtn:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+/* Hang up: bright red round button. */
+.callbtn-end {
+  background: var(--danger); color: #fff;
   box-shadow: 0 4px 14px rgba(229,57,53,.4);
+}
+.callbtn-end:hover { background: var(--danger); filter: brightness(1.08); }
+/* Icon + slider group for mic / video on-off toggles. */
+.calltoggle {
+  display: inline-flex; align-items: center; gap: .25rem; flex: 0 0 auto;
+  cursor: pointer; user-select: none;
+}
+.calltoggle .cic { font-size: 1.1rem; line-height: 1; }
+/* Slightly smaller toggle so two of them fit alongside the buttons on ~360px. */
+.calltoggle .toggle .track { width: 34px; height: 19px; }
+.calltoggle .toggle .track::after { width: 15px; height: 15px; }
+.calltoggle .toggle > input:checked + .track::after { transform: translateX(15px); }
+/* Section heading inside the call-settings window. */
+.dlg-section {
+  font-size: .8rem; font-weight: 600; color: var(--ink-soft);
+  margin-top: .6rem; text-transform: uppercase; letter-spacing: .03em;
 }
 
 /* Direct hang-up shown only on the minimized PiP (so you can always stop). */

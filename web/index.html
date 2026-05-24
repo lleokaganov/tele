@@ -211,22 +211,21 @@
       <div id="stats-overlay" class="stats-overlay" hidden></div>
       <button id="stats-toggle" class="stats-toggle" data-i18n-title="conn_stats" title="connection stats">ⓘ</button>
     </div>
+    <!-- One compact icon-only row: hang up + mic/video toggles + flip camera +
+         device settings. Toggles are lui sliders (checked = ON). Camera / mic /
+         speaker / quality choices moved into a separate settings window (⚙). -->
     <div class="call-controls">
-      <button id="hangup-btn" class="btn btn-danger" data-i18n="hang_up">Hang up</button>
-      <button id="mute-btn"   class="btn btn-ghost" data-i18n="mic">🔇 Mic</button>
-      <button id="video-btn"  class="btn btn-ghost" data-i18n="video">🎥 Video</button>
-      <button id="switch-cam" class="btn btn-ghost" data-i18n="camera">↻ Camera</button>
-      <!-- Device pickers: icon only (no device names in the row — they'd blow it up
-           on desktop). Each opens a list window. Shown only when >1 device exists. -->
-      <button id="cam-pick"   class="btn btn-ghost" hidden data-i18n-title="dev_camera" data-i18n-aria="dev_camera" title="Camera">📷</button>
-      <button id="mic-pick"   class="btn btn-ghost" hidden data-i18n-title="dev_mic"    data-i18n-aria="dev_mic"    title="Microphone">🎙️</button>
-      <button id="speaker-btn" class="btn btn-ghost" hidden data-i18n-title="dev_speaker" data-i18n-aria="dev_speaker" title="Speaker">🔊</button>
-      <select id="res-select" class="resolution-select">
-        <option value="240">240p</option>
-        <option value="360">360p</option>
-        <option value="480" selected>480p</option>
-        <option value="720">720p</option>
-      </select>
+      <button id="hangup-btn" class="callbtn callbtn-end" data-i18n-title="hang_up" data-i18n-aria="hang_up" title="hang up" aria-label="hang up">📞</button>
+      <label class="calltoggle" data-i18n-title="mic" title="microphone">
+        <span class="cic">🎤</span>
+        <span class="toggle"><input id="mute-toggle" type="checkbox" checked /><span class="track"></span></span>
+      </label>
+      <label class="calltoggle" data-i18n-title="video" title="video">
+        <span class="cic">🎥</span>
+        <span class="toggle"><input id="video-toggle" type="checkbox" checked /><span class="track"></span></span>
+      </label>
+      <button id="switch-cam" class="callbtn" data-i18n-title="camera" data-i18n-aria="camera" title="flip camera" aria-label="flip camera">🔄</button>
+      <button id="dev-pick" class="callbtn" data-i18n-title="call_settings" data-i18n-aria="call_settings" title="call settings" aria-label="call settings">⚙</button>
     </div>
     <!-- Shown only while minimized: a direct hang-up so you can always stop a
          call without expanding first. -->

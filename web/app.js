@@ -706,6 +706,10 @@ function openCallWindowExpanded() {
   w.classList.add('no-remote')   // self-view fills the window until the peer connects
   clearWinInline(w)
   resetMyVideoPos()
+  // Fresh call starts with mic + video ON, so the toggles reflect that.
+  const mt = $('mute-toggle'), vt = $('video-toggle')
+  if (mt) mt.checked = true
+  if (vt) vt.checked = true
 }
 // Just ensure the window is visible WITHOUT touching the mini/expanded state —
 // used by state updates so a user-chosen minimize survives later events.
@@ -1204,7 +1208,6 @@ const call = new CallManager(client, {
       populateDeviceSelectors()
     }
     if (s === 'connected') {
-      $('mute-btn').textContent = t('mute')
       stopAllRings()
       startNetDot()
     }
@@ -2201,74 +2204,96 @@ $('cw-close').onclick = () => call.hangup()
 $('cw-mini-end').onclick = (e) => { e.stopPropagation(); call.hangup() }
 
 $('switch-cam').onclick = () => call.switchCamera()
-$('mute-btn').onclick   = () => {
+// Mic toggle: checked = mic ON. toggleMute() returns the new muted state, so
+// the checkbox is the negation of it (kept in sync even if the call flips it).
+$('mute-toggle').onchange = (e) => {
   const muted = call.toggleMute()
-  $('mute-btn').textContent = muted ? t('mic_off') : t('mic')
+  e.target.checked = !muted
 }
-$('video-btn').onclick = () => {
+// Video toggle: checked = video ON. toggleVideo() returns the new "off" state.
+$('video-toggle').onchange = (e) => {
   const off = call.toggleVideo()
-  $('video-btn').textContent = off ? t('video_off') : t('video')
-}
-$('res-select').onchange = () => {
-  call.setVideoResolution(parseInt($('res-select').value, 10))
+  e.target.checked = !off
 }
 
-/* Camera / microphone pickers — appear during a call when more than one
- * device of a kind is present. Switching replaces the corresponding track
+/* Device selection moved into a single "Call settings" window (⚙). Camera,
+ * microphone and speaker pickers appear only when more than one device of that
+ * kind exists; video quality is always offered. Switching a track replaces it
  * in the live RTCPeerConnection without renegotiating. */
-// Device pickers. Device names can be long, so the call-control row shows only
-// ICONS; tapping one opens a list window (.dialog → above the call window). Each
-// icon is shown only when there's more than one device of that kind.
 let curCamId = null, curMicId = null, curSpkId = null
+let curRes = 480   // current video quality (vertical px); default 480p
 
+// Called on connecting/connected. The settings icon (⚙) is always visible
+// (quality is always selectable), so this no longer toggles icon visibility —
+// it's kept as a hook in case device labels need pre-warming.
 async function populateDeviceSelectors() {
-  let devs
-  try { devs = await call.listDevices() } catch { return }
-  $('cam-pick').hidden = (devs.videoInputs?.length || 0) < 2
-  $('mic-pick').hidden = (devs.audioInputs?.length || 0) < 2
-  let outs = 0
-  try { outs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audiooutput').length } catch {}
-  $('speaker-btn').hidden = outs < 2
+  try { await call.listDevices() } catch {}
 }
 
-// Generic device-choice modal: lists devices (current one ticked); tap one to
-// apply + close. Uses .dialog so it sits above the call window.
-function openDevicePicker(title, devices, currentId, apply) {
-  if (!devices.length) return
+$('dev-pick').onclick = () => openDeviceSettings()
+
+// Single settings window: builds a section per available choice. Only renders a
+// device section when there's a real choice (>1 device); quality is always
+// shown. Uses .dialog so it sits above the call window (z-index 1000).
+async function openDeviceSettings() {
+  let devs = {}
+  try { devs = await call.listDevices() } catch {}
+  let outs = []
+  try { outs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audiooutput') } catch {}
+
   const overlay = document.createElement('div'); overlay.className = 'dialog'
   const box = document.createElement('div'); box.className = 'dialog-box'
-  const ttl = document.createElement('div'); ttl.className = 'dialog-title'; ttl.textContent = title
-  const list = document.createElement('div'); list.className = 'dev-list'
-  devices.forEach((d, i) => {
-    const b = document.createElement('button'); b.className = 'msg-menu-item'
-    b.textContent = (d.deviceId === currentId ? '✓ ' : '') + (d.label || `${title} ${i + 1}`)
-    b.onclick = () => { overlay.remove(); apply(d.deviceId) }
-    list.appendChild(b)
-  })
+  const ttl = document.createElement('div'); ttl.className = 'dialog-title'; ttl.textContent = t('call_settings')
+  box.appendChild(ttl)
+
+  // Add a labelled section of tappable items; `items` is [{label, id, on?}].
+  // `currentId` ticks the active one; tapping calls apply(id) then closes.
+  const addSection = (heading, items, currentId, apply) => {
+    const h = document.createElement('div'); h.className = 'dlg-section'; h.textContent = heading
+    const list = document.createElement('div'); list.className = 'dev-list'
+    items.forEach((it, i) => {
+      const b = document.createElement('button'); b.className = 'msg-menu-item'
+      const on = it.id === currentId
+      b.textContent = (on ? '✓ ' : '') + (it.label || `${heading} ${i + 1}`)
+      b.onclick = () => { overlay.remove(); apply(it.id) }
+      list.appendChild(b)
+    })
+    box.append(h, list)
+  }
+
+  const cams = devs.videoInputs || []
+  if (cams.length > 1) {
+    addSection(t('dev_camera'),
+      cams.map((d, i) => ({ label: d.label || `${t('dev_camera')} ${i + 1}`, id: d.deviceId })),
+      curCamId, (id) => { curCamId = id; call.setVideoInput(id) })
+  }
+  const mics = devs.audioInputs || []
+  if (mics.length > 1) {
+    addSection(t('dev_mic'),
+      mics.map((d, i) => ({ label: d.label || `${t('dev_mic')} ${i + 1}`, id: d.deviceId })),
+      curMicId, (id) => { curMicId = id; call.setAudioInput(id) })
+  }
+  if (outs.length > 1) {
+    addSection(t('dev_speaker'),
+      outs.map((d, i) => ({ label: d.label || `${t('dev_speaker')} ${i + 1}`, id: d.deviceId })),
+      curSpkId, async (id) => {
+        try { await call.setAudioSink(id); curSpkId = id }
+        catch (e) { toast(t('audio_sink_err', { err: e.message }), 'error') }
+      })
+  }
+  // Quality is always available.
+  addSection(t('resolution'),
+    [240, 360, 480, 720].map(p => ({ label: `${p}p`, id: p })),
+    curRes, (p) => { curRes = p; call.setVideoResolution(p) })
+
   const btns = document.createElement('div'); btns.className = 'dialog-buttons'
   const cancel = document.createElement('button'); cancel.className = 'secondary'; cancel.textContent = t('cancel')
   cancel.onclick = () => overlay.remove()
   btns.appendChild(cancel)
-  box.append(ttl, list, btns); overlay.appendChild(box)
+  box.appendChild(btns)
+  overlay.appendChild(box)
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove() }
   document.body.appendChild(overlay)
-}
-
-$('cam-pick').onclick = async () => {
-  let devs; try { devs = await call.listDevices() } catch { return }
-  openDevicePicker(t('dev_camera'), devs.videoInputs || [], curCamId, (id) => { curCamId = id; call.setVideoInput(id) })
-}
-$('mic-pick').onclick = async () => {
-  let devs; try { devs = await call.listDevices() } catch { return }
-  openDevicePicker(t('dev_mic'), devs.audioInputs || [], curMicId, (id) => { curMicId = id; call.setAudioInput(id) })
-}
-$('speaker-btn').onclick = async () => {
-  let outs = []
-  try { outs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audiooutput') } catch {}
-  if (!outs.length) { toast(t('no_audio_outputs'), 'error'); return }
-  openDevicePicker(t('dev_speaker'), outs, curSpkId, async (id) => {
-    try { await call.setAudioSink(id); curSpkId = id } catch (e) { toast(t('audio_sink_err', { err: e.message }), 'error') }
-  })
 }
 $('send-text').onclick = async () => {
   if (!currentPeerId) return
