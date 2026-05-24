@@ -585,4 +585,14 @@ html[data-theme="dark"] .msg.me    { background: rgba(255,98,0,.14); }
   background: color-mix(in srgb, var(--danger) 12%, transparent);
   outline: none;
 }
-.win-body #set-id { font-family: ui-monospace, monospace; font-size: .8rem; }
+/* Two danger-zone actions stacked with breathing room. */
+.win-body .set-danger > .set-wipe-link { display: block; width: fit-content; margin-top: 10px; }
+/* Owner id shown tiny under the name (copyable on tap). The #set-id element now
+   carries the .set-id-mini class; keep the id selector aligned so it wins on
+   specificity. */
+.win-body #set-id,
+.win-body .set-id-mini {
+  font-size: .72rem; color: var(--ink-soft);
+  font-family: ui-monospace, monospace;
+  margin-top: 2px; cursor: pointer;
+}

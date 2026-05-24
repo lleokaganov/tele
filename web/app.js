@@ -335,7 +335,9 @@ function openContactMenu(idHex, x, y) {
     menu.appendChild(b)
   }
   item(t('rename'), () => openRenameDialog(idHex))
-  item(t('delete_contact'), () => openDeleteContactDialog(idHex), 'danger')
+  item(t('clear_chat'), () => clearContactChat(idHex))
+  item(isBanned(idHex) ? t('unban') : t('ban'), () => toggleBanContact(idHex))
+  item(t('del_contact'), () => openDeleteContactDialog(idHex), 'danger')
 
   document.body.appendChild(menu)
   const r = menu.getBoundingClientRect()
@@ -408,6 +410,29 @@ function openDeleteContactDialog(idHex) {
     close()
     toast(t('deleted', { name }), 'success')
   }
+}
+
+// Erase only the conversation with a contact (history + files), keeping the
+// contact itself. Guarded by a confirm; refreshes the open chat if it's this peer.
+function clearContactChat(idHex) {
+  const p = peerBook[idHex]
+  if (!p) return
+  const name = p.label || idHex.slice(0, 8)
+  window.lui.confirm({
+    icon: '🧹', title: t('clear_history_title'), text: t('clear_history_text', { name }),
+    danger: true, ok: t('clear'), cancel: t('cancel'),
+  }, async () => {
+    try { await Storage.clearHistory(idHex) } catch (e) { console.warn('clearHistory', e) }
+    clearUnread(idHex)
+    if (currentPeerId === idHex) await refreshChat()
+  })
+}
+
+// Toggle a contact's ban state. Banned peers stay in the list but their
+// incoming messages/calls/files are silently ignored (see CallManager callbacks).
+function toggleBanContact(idHex) {
+  setBanned(idHex, !isBanned(idHex))
+  renderContacts()
 }
 
 function escapeHtml(s) {
@@ -716,6 +741,9 @@ const renderedMessages = new Map()  // msgId -> DOM element
 
 // Inbound chunks staging: file_id -> [chunks indexed by chunk_idx].
 const inboundChunks = new Map()
+// In ephemeral mode (save-chats OFF) inbound file metadata is kept here instead
+// of IndexedDB: file_id -> meta { id, name, mime, size, thumb_blob }.
+const inboundMetaMem = new Map()
 const CHUNK_BYTES   = 32 * 1024   // 32 KB per FILE_CHUNK frame
 
 // Read-ack incoming messages when the chat is opened. Track which ids we've
@@ -924,10 +952,12 @@ function buildPreviewCard(p) {
   return a
 }
 
-async function renderFileMessage(m) {
+async function renderFileMessage(m, fileObj = null) {
   const row = makeMsgShell(m)
   const fileId = fileIdOf(m.body)
-  const f = await Storage.getFile(fileId)
+  // In ephemeral mode the file is never written to IDB, so the caller hands us
+  // the in-memory file object directly instead of going through Storage.
+  const f = fileObj || await Storage.getFile(fileId)
   const box = document.createElement('div')
   box.className = 'msg-file'
   if (!f) {
@@ -1171,7 +1201,10 @@ const call = new CallManager(client, {
   },
   onText: async (peerId, msgId, text) => {
     const idHex = u8hex(peerId)
-    const isNew = await Storage.saveIncoming(idHex, msgId, text, Date.now())
+    if (isBanned(idHex)) return  // ignore messages from blocked peers
+    const isNew = chatsPersistEnabled()
+      ? await Storage.saveIncoming(idHex, msgId, text, Date.now())
+      : true  // ephemeral: nothing persisted, always treat as a fresh message
     // ACK regardless — idempotent on the sender side too.
     client.sendDeliveryAck(peerId, msgId)
     if (!isNew) return
@@ -1209,6 +1242,7 @@ const call = new CallManager(client, {
   },
   // ---- file transfer ----
   onFileOffer: async (peerId, meta) => {
+    if (isBanned(u8hex(peerId))) return  // ignore file offers from blocked peers
     // Store metadata + thumbnail (if image) so we can render a preview
     // immediately. Blob comes together in FILE_END.
     let thumb_blob = null
@@ -1220,7 +1254,9 @@ const call = new CallManager(client, {
         thumb_blob = new Blob([u8], { type: 'image/jpeg' })
       } catch {}
     }
-    await Storage.saveFileMeta({ ...meta, thumb_blob })
+    const fileMeta = { id: meta.id, mime: meta.mime, name: meta.name, size: meta.size, thumb_blob }
+    if (chatsPersistEnabled()) await Storage.saveFileMeta({ ...meta, thumb_blob })
+    else                       inboundMetaMem.set(meta.id, { ...fileMeta, blob: null })
     inboundChunks.set(meta.id, [])
   },
   onFileChunk: (peerId, fileId, idx, data) => {
@@ -1231,17 +1267,27 @@ const call = new CallManager(client, {
   onFileEnd: async (peerId, fileId, msgId) => {
     const arr = inboundChunks.get(fileId)
     if (!arr) return
-    const meta = await Storage.getFile(fileId)
+    const persist = chatsPersistEnabled()
+    const meta = persist ? await Storage.getFile(fileId) : inboundMetaMem.get(fileId)
     if (!meta) return
     const blob = new Blob(arr.filter(Boolean), { type: meta.mime })
-    await Storage.saveFileBlob(fileId, blob)
     inboundChunks.delete(fileId)
     const idHex = u8hex(peerId)
-    const isNew = await Storage.saveIncoming(idHex, msgId, `%${fileId}`, Date.now())
+    let isNew, fileObj
+    if (persist) {
+      await Storage.saveFileBlob(fileId, blob)
+      isNew = await Storage.saveIncoming(idHex, msgId, `%${fileId}`, Date.now())
+    } else {
+      // Ephemeral: keep the assembled blob in memory only, render from it.
+      meta.blob = blob
+      fileObj = meta
+      inboundMetaMem.delete(fileId)
+      isNew = true
+    }
     client.sendDeliveryAck(peerId, msgId)
     if (!isNew) return
     if (currentPeerId === idHex) {
-      const row = await renderFileMessage({ id: msgId, dir: 'in', body: `%${fileId}`, status: 'received' })
+      const row = await renderFileMessage({ id: msgId, dir: 'in', body: `%${fileId}`, status: 'received' }, fileObj)
       $('chat').appendChild(row)
       $('chat').scrollTop = $('chat').scrollHeight
       client.sendReadAck(peerId, msgId); readAcked.add(msgId)  // chat open → read right away
@@ -1253,6 +1299,10 @@ const call = new CallManager(client, {
   },
   onIncomingCall: (peerId) => {
     const idHex = u8hex(peerId)
+    if (isBanned(idHex)) {        // blocked peer: silently reject, no ring/dialog
+      try { call.rejectIncoming(peerId) } catch (e) { console.warn('reject banned', e) }
+      return
+    }
     const name = peerBook[idHex]?.label || idHex.slice(0, 8)
     $('incoming-name').textContent = t('is_calling', { name })
     $('dialog-incoming').hidden = false
@@ -1549,10 +1599,17 @@ async function registerFcm() {
         try {
           const LN = window.Capacitor?.Plugins?.LocalNotifications
           if (LN) {
+            // Ephemeral mode (save-chats OFF): there is no persisted history to
+            // scroll back to, so keep the notification sticky (ongoing, not
+            // auto-cancelled) until the user dismisses it. Normal mode behaves
+            // as before (tap-to-dismiss).
+            const ephemeral = !chatsPersistEnabled()
             LN.schedule({ notifications: [{
               id: Date.now() % 1000000,
               title, body,
               channelId: 'telefon_messages',
+              ongoing: ephemeral,
+              autoCancel: !ephemeral,
             }] })
           }
         } catch (e) { console.warn('local notif:', e) }
@@ -2161,8 +2218,11 @@ $('send-text').onclick = async () => {
   // message lands in (and the user sees) the normal view, not the result list.
   if (searchActive) await closeSearch()
 
-  // Persist first so the message survives a refresh / offline retry.
-  const msgId = await Storage.saveOutgoing(currentPeerId, text)
+  // Persist first so the message survives a refresh / offline retry. In
+  // ephemeral mode (save-chats OFF) nothing is written — we only mint an id and
+  // render the bubble in-memory.
+  const persist = chatsPersistEnabled()
+  const msgId = persist ? await Storage.saveOutgoing(currentPeerId, text) : crypto.randomUUID()
   appendChatRow({ id: msgId, dir: 'out', body: text, status: 'pending' })
   $('chat').scrollTop = $('chat').scrollHeight
   $('text-input').value = ''
@@ -2171,8 +2231,10 @@ $('send-text').onclick = async () => {
   // outbox entry stays and we retry on PEER_ONLINE.
   client.introduce(peerId, nickname || '')
   const ok = client.sendText(peerId, msgId, text)
-  if (ok) {
+  if (ok && persist) {
     await Storage.markStatus(msgId, 'sent')
+    updateRowStatus(msgId, 'sent')
+  } else if (ok) {
     updateRowStatus(msgId, 'sent')
   }
   // If the recipient is offline, nudge the server to push-wake them.
@@ -2205,16 +2267,25 @@ async function sendFile(file) {
   }
 
   const meta = { id: fileId, name: file.name, mime: file.type || 'application/octet-stream', size: file.size, thumb_b64 }
-  await Storage.saveFileMeta({ ...meta, thumb_blob: thumb_b64 ? blobFromB64(thumb_b64, 'image/jpeg') : null })
-  await Storage.saveFileBlob(fileId, file)  // we already have the blob locally
-  await DB.add('telefon.lleo.me', 'messages', {
-    id: msgId, peer_id: currentPeerId, dir: 'out',
-    body: `%${fileId}`, ts: Date.now(), status: 'pending',
-  })
-  await DB.add('telefon.lleo.me', 'outbox', { id: msgId, attempts: 0, last_try_ts: 0 })
+  const thumb_blob = thumb_b64 ? blobFromB64(thumb_b64, 'image/jpeg') : null
+  // In ephemeral mode (save-chats OFF) nothing is written to IDB; we render the
+  // bubble straight from the in-memory file object instead.
+  const persist = chatsPersistEnabled()
+  let fileObj = null
+  if (persist) {
+    await Storage.saveFileMeta({ ...meta, thumb_blob })
+    await Storage.saveFileBlob(fileId, file)  // we already have the blob locally
+    await DB.add('telefon.lleo.me', 'messages', {
+      id: msgId, peer_id: currentPeerId, dir: 'out',
+      body: `%${fileId}`, ts: Date.now(), status: 'pending',
+    })
+    await DB.add('telefon.lleo.me', 'outbox', { id: msgId, attempts: 0, last_try_ts: 0 })
+  } else {
+    fileObj = { id: fileId, name: meta.name, mime: meta.mime, size: meta.size, blob: file, thumb_blob }
+  }
 
   // Render the bubble locally first.
-  const row = await renderFileMessage({ id: msgId, dir: 'out', body: `%${fileId}`, status: 'pending' })
+  const row = await renderFileMessage({ id: msgId, dir: 'out', body: `%${fileId}`, status: 'pending' }, fileObj)
   $('chat').appendChild(row)
   $('chat').scrollTop = $('chat').scrollHeight
 
@@ -2238,7 +2309,7 @@ async function sendFile(file) {
     }
   }
   client.sendFileEnd(peerId, fileId, msgId)
-  await Storage.markStatus(msgId, 'sent')
+  if (persist) await Storage.markStatus(msgId, 'sent')
   updateRowStatus(msgId, 'sent')
   // If the recipient is offline, nudge the server to push-wake them.
   maybeWake(currentPeerId)
@@ -2496,6 +2567,116 @@ function smartDefaultUrl() {
 function u8ToB64(u8) { let s = ''; for (const b of u8) s += String.fromCharCode(b); return btoa(s) }
 function b64ToU8(s) { const d = atob(s); const u = new Uint8Array(d.length); for (let i = 0; i < d.length; i++) u[i] = d.charCodeAt(i); return u }
 
+// ── Encrypted backup (WebCrypto: PBKDF2 → AES-GCM-256) ─────────────────────────
+// Derive an AES-GCM key from a password + salt via PBKDF2-SHA256.
+async function deriveBackupKey(password, salt, iter = 200000) {
+  const enc = new TextEncoder()
+  const baseKey = await crypto.subtle.importKey(
+    'raw', enc.encode(password), 'PBKDF2', false, ['deriveKey'])
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: iter, hash: 'SHA-256' },
+    baseKey,
+    { name: 'AES-GCM', length: 256 },
+    false, ['encrypt', 'decrypt'])
+}
+
+// Encrypt an inner backup object with a password. Returns the on-disk envelope
+// (salt/iv/ct base64) so the file is fully self-describing for decryption.
+async function encryptBackup(inner, password) {
+  const iter = 200000
+  const salt = crypto.getRandomValues(new Uint8Array(16))
+  const iv   = crypto.getRandomValues(new Uint8Array(12))
+  const key  = await deriveBackupKey(password, salt, iter)
+  const pt   = new TextEncoder().encode(JSON.stringify(inner))
+  const ctBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, pt)
+  return {
+    v: 1, type: 'telefon-account', enc: 'aes-gcm', kdf: 'pbkdf2', hash: 'SHA-256',
+    iter,
+    salt: u8ToB64(salt), iv: u8ToB64(iv), ct: u8ToB64(new Uint8Array(ctBuf)),
+  }
+}
+
+// Decrypt an encrypted envelope with a password; returns the inner object.
+// Throws if the password is wrong or the ciphertext is corrupt (AES-GCM auth).
+async function decryptBackup(env, password) {
+  const salt = b64ToU8(env.salt)
+  const iv   = b64ToU8(env.iv)
+  const ct   = b64ToU8(env.ct)
+  const key  = await deriveBackupKey(password, salt, env.iter || 200000)
+  const ptBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct)
+  return JSON.parse(new TextDecoder().decode(new Uint8Array(ptBuf)))
+}
+
+// ── Ephemeral mode: persist-chats toggle ───────────────────────────────────────
+// Default ON. localStorage 'telefon_persist_chats': absent/'1' = ON, '0' = OFF.
+// When OFF (ephemeral), incoming/outgoing messages and files are NOT written to
+// IndexedDB — they only render in-memory in the open chat and vanish on restart.
+function chatsPersistEnabled() {
+  return localStorage.getItem('telefon_persist_chats') !== '0'
+}
+
+// ── Block list ─────────────────────────────────────────────────────────────────
+// Banned peers (by idHex). localStorage 'telefon_banned' = JSON array of idHex.
+// Incoming text/calls/files from a banned peer are silently ignored.
+function loadBanned() {
+  try { return new Set(JSON.parse(localStorage.getItem('telefon_banned') || '[]')) }
+  catch { return new Set() }
+}
+const banned = loadBanned()
+function isBanned(idHex) { return banned.has(idHex) }
+function setBanned(idHex, on) {
+  if (on) banned.add(idHex); else banned.delete(idHex)
+  try { localStorage.setItem('telefon_banned', JSON.stringify([...banned])) } catch {}
+}
+
+// Centered modal asking for a single password (shown as VISIBLE text — never a
+// masked field, per Leo's rule). Resolves with the entered string ('' allowed)
+// or null on cancel. `subtitle` explains what the password is for.
+function askPassword(title, subtitle) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div')
+    overlay.className = 'dialog'
+    let settled = false
+    const finish = (val) => { if (settled) return; settled = true; overlay.remove(); resolve(val) }
+    const box = document.createElement('div')
+    box.className = 'dialog-box'
+    const ttl = document.createElement('div')
+    ttl.className = 'dialog-title'; ttl.textContent = title
+    box.appendChild(ttl)
+    if (subtitle) {
+      const sub = document.createElement('div')
+      sub.className = 'dialog-text'; sub.textContent = subtitle
+      box.appendChild(sub)
+    }
+    const inp = document.createElement('input')
+    // Visible plain text — NOT type=password (no masking), per project rule.
+    // Bare type=text matches the other dialogs' inputs (global input[type=text]).
+    inp.type = 'text'
+    inp.autocapitalize = 'off'
+    inp.autocomplete = 'off'
+    inp.spellcheck = false
+    box.appendChild(inp)
+    const btns = document.createElement('div')
+    btns.className = 'dialog-buttons'
+    const cancel = document.createElement('button')
+    cancel.className = 'secondary'; cancel.textContent = t('cancel')
+    cancel.onclick = () => finish(null)
+    const ok = document.createElement('button')
+    ok.className = 'primary'; ok.textContent = t('ok')
+    ok.onclick = () => finish(inp.value)
+    btns.appendChild(cancel); btns.appendChild(ok)
+    box.appendChild(btns)
+    overlay.appendChild(box)
+    overlay.onclick = (e) => { if (e.target === overlay) finish(null) }
+    inp.onkeydown = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(inp.value) }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(null) }
+    }
+    document.body.appendChild(overlay)
+    inp.focus()
+  })
+}
+
 // Generic file save: native share-sheet in the APK (Android WebView can't
 // download blob: URLs), plain <a download> on the web.
 async function saveTextFile(name, text, mime = 'application/json') {
@@ -2506,49 +2687,81 @@ async function saveTextFile(name, text, mime = 'application/json') {
   URL.revokeObjectURL(a.href)
 }
 
-// Account backup = SECRET identity keys + nickname + contacts. Deliberately NOT
-// chat history or files — those are not exported.
-function buildAccountBackup() {
+// The secret core of a backup: identity seeds + nickname + contacts.
+// Deliberately NOT chat history or files — those are not exported. This object
+// is what gets encrypted when a password is supplied.
+function buildAccountInner() {
   const s = loadSeeds()
   const contacts = Object.entries(loadPeers())
     .filter(([, p]) => p?.qr)
     .map(([id, p]) => ({ id, qr: p.qr, label: p.label || null }))
   return {
-    v: 1, type: 'telefon-account',
     nickname: loadNickname() || null,
     seeds: s ? { x: u8ToB64(s.xSeed), ed: u8ToB64(s.edSeed) } : null,
     contacts,
   }
 }
+
+// Unencrypted on-disk envelope (enc:false) wrapping the inner secret object.
+function buildAccountBackup() {
+  return { v: 1, type: 'telefon-account', enc: false, ...buildAccountInner() }
+}
+
+// Apply a decrypted/plain inner backup: overwrite identity + contacts, reload.
+function applyAccountInner(inner) {
+  if (inner.seeds?.x && inner.seeds?.ed) saveSeeds(b64ToU8(inner.seeds.x), b64ToU8(inner.seeds.ed))
+  if (inner.nickname) saveNickname(inner.nickname)
+  const peers = {}
+  for (const c of (inner.contacts || [])) {
+    if (c?.id && c?.qr?.startsWith('K0')) peers[c.id] = { qr: c.qr, label: c.label || null }
+  }
+  savePeers(peers)
+  toast(t('acc_imported'), 'success')
+  setTimeout(() => location.reload(), 700)
+}
+
+// Export the account. Asks for an optional password: empty → unencrypted
+// (human-readable, editable) JSON; non-empty → AES-GCM-encrypted envelope.
+// Either way the file is named telefon-account.json.
 async function exportAccount() {
+  const pw = await askPassword(t('acc_pw_title'), t('acc_pw_export'))
+  if (pw === null) return  // cancelled
   try {
-    await saveTextFile('telefon-account.json', JSON.stringify(buildAccountBackup(), null, 2))
+    const envelope = pw === ''
+      ? buildAccountBackup()
+      : await encryptBackup(buildAccountInner(), pw)
+    await saveTextFile('telefon-account.json', JSON.stringify(envelope, null, 2))
     toast(t('acc_exported'), 'success')
   } catch (e) { toast(t('import_failed', { err: e }), 'error') }
 }
 
 // Restore an account backup (keys + nickname + contacts), then reload. Replacing
-// the identity is destructive, so confirm first. Falls back to the legacy
+// the identity is destructive, so confirm first. Handles both plain (enc:false)
+// and encrypted (enc:'aes-gcm') envelopes, and falls back to the legacy
 // plain-text contacts format (which is additive, no identity change).
 async function importAccountFile(file) {
   const text = await file.text()
   let data = null
   try { data = JSON.parse(text) } catch {}
   if (data && data.type === 'telefon-account') {
+    if (data.enc === 'aes-gcm') {
+      const pw = await askPassword(t('acc_pw_title'), t('acc_pw_import'))
+      if (pw === null) return  // cancelled
+      let inner
+      try { inner = await decryptBackup(data, pw) }
+      catch { toast(t('acc_bad_pw'), 'error'); return }
+      window.lui.confirm({
+        icon: '⚠️', title: t('account'), text: t('acc_warn_import'),
+        danger: true, ok: t('acc_import'), cancel: t('cancel'),
+      }, () => applyAccountInner(inner))
+      return
+    }
+    // enc:false (or no enc field) → plain backup. The inner secret fields live
+    // at the top level of the envelope.
     window.lui.confirm({
       icon: '⚠️', title: t('account'), text: t('acc_warn_import'),
       danger: true, ok: t('acc_import'), cancel: t('cancel'),
-    }, () => {
-      if (data.seeds?.x && data.seeds?.ed) saveSeeds(b64ToU8(data.seeds.x), b64ToU8(data.seeds.ed))
-      if (data.nickname) saveNickname(data.nickname)
-      const peers = {}
-      for (const c of (data.contacts || [])) {
-        if (c?.id && c?.qr?.startsWith('K0')) peers[c.id] = { qr: c.qr, label: c.label || null }
-      }
-      savePeers(peers)
-      toast(t('acc_imported'), 'success')
-      setTimeout(() => location.reload(), 700)
-    })
+    }, () => applyAccountInner(data))
     return
   }
   // Legacy plain-text contacts: "id qr label" per line (additive).
@@ -2589,13 +2802,22 @@ function wipeIdentity() {
   })()
 }
 
+// Delete all chat history (messages, outbox, files) but keep the identity
+// (seeds/nickname) and contacts. Clear unread badges too, then reload for a
+// clean UI state.
+function deleteAllChats() {
+  ;(async () => {
+    await Storage.wipe()
+    for (const k of Object.keys(unread)) delete unread[k]
+    persistUnread()
+    toast(t('chats_deleted'), 'success')
+    setTimeout(() => location.reload(), 500)
+  })()
+}
+
 // Open the settings window. Built fresh each time so it shows current values.
 function openSettings() {
   const lui = window.lui
-  const cur = serverConfig()
-  const curUrl   = cur.url   || smartDefaultUrl()
-  const curXpub  = cur.xpub  || SRV_DEFAULTS.xpub
-  const curEdpub = cur.edpub || SRV_DEFAULTS.edpub
   const invite   = buildInviteUrl(client.qrText(nickname || ''))
   const idLine   = `id: ${u8hex(client.myId)}`
   const themeNow = lui.theme()                 // 'auto' | 'light' | 'dark'
@@ -2615,13 +2837,12 @@ function openSettings() {
         <span id="set-name-display" class="inline-edit" tabindex="0" role="button" title="${escapeHtml(t('tap_to_edit'))}"></span>
         <input id="set-name" class="input" type="text" maxlength="40" placeholder="${escapeHtml(t('set_name_ph'))}" data-nopersist hidden />
       </div>
+      <div id="set-id" class="set-id-mini" data-copy></div>
     </div>
 
     <div class="set-sec">
       <h3>${escapeHtml(t('set_invite'))}</h3>
       <input id="set-invite" class="input" type="text" data-copy data-nopersist />
-      <div class="muted" style="margin-top:6px">${escapeHtml(t('click_to_copy'))}</div>
-      <div class="muted" id="set-id" data-copy style="margin-top:8px"></div>
     </div>
 
     <div class="set-sec">
@@ -2634,7 +2855,6 @@ function openSettings() {
     </div>
 
     <div class="set-sec">
-      <h3>${escapeHtml(t('set_appearance'))}</h3>
       <div class="set-row" style="justify-content:space-between">
         <span>${escapeHtml(t('set_theme'))}</span>
         <span class="select">
@@ -2658,6 +2878,13 @@ function openSettings() {
           <span class="track"></span>
         </label>
       </div>
+      <div class="set-row" style="justify-content:space-between; margin-top:12px">
+        <span>${escapeHtml(t('save_chats'))}</span>
+        <label class="toggle">
+          <input id="set-persist" type="checkbox" data-nopersist />
+          <span class="track"></span>
+        </label>
+      </div>
     </div>
 
     <div class="set-sec">
@@ -2667,25 +2894,17 @@ function openSettings() {
         <span id="set-url-display" class="inline-edit" tabindex="0" role="button" title="${escapeHtml(t('tap_to_edit'))}"></span>
         <input id="set-url" class="input" type="text" data-nopersist hidden />
       </div>
-      <details class="set-adv">
-        <summary>${escapeHtml(t('advanced'))}</summary>
-        <label class="muted">${escapeHtml(t('xpub_label'))}</label>
-        <input id="set-xpub"  class="input" type="text" placeholder="${escapeHtml(t('hex_ph'))}" data-nopersist />
-        <label class="muted">${escapeHtml(t('edpub_label'))}</label>
-        <input id="set-edpub" class="input" type="text" placeholder="${escapeHtml(t('hex_ph'))}" data-nopersist />
-      </details>
     </div>
 
     <div class="set-sec">
-      <h3>${escapeHtml(t('update'))}</h3>
       <div class="muted" id="set-update-status" style="margin:0 0 8px; line-height:1.4"></div>
       <button id="set-update" class="btn btn-ghost">${escapeHtml(t('check_update'))}</button>
     </div>
 
     <details class="set-sec set-danger">
       <summary>${escapeHtml(t('danger_zone'))}</summary>
-      <p class="muted set-danger-note">${escapeHtml(t('wipe_warn'))}</p>
-      <a id="set-wipe" class="set-wipe-link" role="button" tabindex="0">${escapeHtml(t('wipe'))}</a>
+      <a id="set-del-chats" class="set-wipe-link" role="button" tabindex="0">${escapeHtml(t('del_all_chats'))}</a>
+      <a id="set-wipe" class="set-wipe-link" role="button" tabindex="0">${escapeHtml(t('del_account'))}</a>
     </details>`
 
   const w = lui.win(t('settings_title'), html)
@@ -2697,8 +2916,7 @@ function openSettings() {
   q('#set-theme').value  = themeNow
   q('#set-lang').value   = langNow
   q('#set-fx').checked   = !!fxNow
-  q('#set-xpub').value   = curXpub
-  q('#set-edpub').value  = curEdpub
+  q('#set-persist').checked = chatsPersistEnabled()
 
   // ── My name (inline edit: shown as text; tap → input; commit on blur/Enter,
   //    no OK button — what you typed is your name) ──
@@ -2738,12 +2956,10 @@ function openSettings() {
 
   // ── Invite / contacts ── (invite copies on click via data-copy; id too)
   q('#set-id').setAttribute('data-copy', u8hex(client.myId))   // copy clean hex, not "id: …"
-  q('#set-acc-export').onclick = () => {
-    lui.confirm({
-      icon: '🔑', title: t('account'), text: t('acc_warn_export'),
-      ok: t('acc_export'), cancel: t('cancel'),
-    }, exportAccount)
-  }
+  // Export opens its own password dialog (empty = unencrypted). The export
+  // warning is already shown as a paragraph in the Account section above.
+  q('#set-acc-export').onclick = () => { exportAccount() }
+  // Import: pick the file first; #import-file.onchange routes to importAccountFile.
   q('#set-acc-import').onclick = () => $('import-file').click()
 
   // ── Appearance ──
@@ -2755,6 +2971,12 @@ function openSettings() {
     // Demo the effects right away when turning them ON, so the difference is
     // felt: a sliding toast (motion), a chime (sound) and a buzz (haptics).
     if (on) { lui.sound('ok'); lui.vibrate('ok'); lui.toast(t('effects_on')) }
+  }
+  // ── Save-chats toggle (ephemeral mode) ──
+  // ON (default) → history is persisted to IDB. OFF → ephemeral: nothing is
+  // written, chats live only in the open view and vanish on restart.
+  q('#set-persist').onchange = (e) => {
+    localStorage.setItem('telefon_persist_chats', e.target.checked ? '1' : '0')
   }
 
   // ── Server config (no buttons: URL is inline-edit, empty = default; any
@@ -2803,21 +3025,6 @@ function openSettings() {
   }
   showUrlText()
 
-  // Advanced server keys — validate hex on blur, persist, reconnect if changed.
-  const commitKey = (inputSel, lsKey, def, errKey) => {
-    const el = q(inputSel)
-    el.onblur = () => {
-      const v = el.value.trim().toLowerCase()
-      if (v && !/^[0-9a-f]{64}$/.test(v)) { toast(t(errKey), 'error'); return }
-      const before = localStorage.getItem(lsKey) || def
-      if (v && v !== def) localStorage.setItem(lsKey, v)
-      else                localStorage.removeItem(lsKey)
-      if ((localStorage.getItem(lsKey) || def) !== before) reconnectNow()
-    }
-  }
-  commitKey('#set-xpub',  'telefon_srv_xpub',  SRV_DEFAULTS.xpub,  'xpub_need_hex')
-  commitKey('#set-edpub', 'telefon_srv_edpub', SRV_DEFAULTS.edpub, 'edpub_need_hex')
-
   // ── Update ──
   q('#set-update').onclick = async () => {
     const btn = q('#set-update'), status = q('#set-update-status')
@@ -2842,15 +3049,23 @@ function openSettings() {
     }
   }
 
-  // ── Wipe identity (guarded by lui.confirm) ──
+  // ── Danger zone: two guarded actions ──
+  // 1) Delete all chats — keeps identity + contacts, wipes only history.
+  const askDelChats = () => {
+    lui.confirm({
+      icon: '🧹', title: t('del_all_chats'), text: t('del_chats_warn'),
+      danger: true, ok: t('del_all_chats'), cancel: lui.t('cancel'),
+    }, deleteAllChats)
+  }
+  q('#set-del-chats').onclick = askDelChats
+  q('#set-del-chats').onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); askDelChats() }
+  }
+  // 2) Delete account — full wipe (identity + contacts + history).
   const askWipe = () => {
     lui.confirm({
-      icon: '🗑️',
-      title: t('wipe_q'),
-      text: t('wipe_q_text'),
-      danger: true,
-      ok: t('wipe'),
-      cancel: lui.t('cancel'),
+      icon: '🗑️', title: t('wipe_q'), text: t('del_account_warn'),
+      danger: true, ok: t('del_account'), cancel: lui.t('cancel'),
     }, wipeIdentity)
   }
   q('#set-wipe').onclick = askWipe
