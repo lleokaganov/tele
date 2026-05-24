@@ -201,10 +201,10 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   inset: env(safe-area-inset-top) 0 0 0;            /* mobile: near-fullscreen */
   border-radius: 16px 16px 0 0;
 }
-@media (min-width: 760px) {                          /* desktop: centered window */
+@media (min-width: 760px) {                          /* desktop: maximised window */
   .call-window {
-    inset: auto; top: 50%; left: 50%; transform: translate(-50%,-50%);
-    width: min(760px, 92vw); height: min(560px, 88vh);
+    inset: 2.5vh 2.5vw; top: auto; left: auto; transform: none;
+    width: auto; height: auto;
     border-radius: 16px;
   }
 }
@@ -214,10 +214,14 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   padding: 10px 12px; background: var(--bg-soft); border-bottom: 1px solid var(--line);
 }
 .call-head .call-peer { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Connection-type dot: green = direct P2P, orange = relayed via TURN. */
-.net-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
-.net-dot.direct { background: #3c3; box-shadow: 0 0 5px #3c3; }
-.net-dot.relay  { background: #f90; box-shadow: 0 0 5px #f90; }
+/* Connection-type label, shown small on its own line in the controls row:
+   green "direct" (P2P) / red "stun" (relayed via TURN). */
+.net-label {
+  flex-basis: 100%; text-align: center; font-size: .72rem;
+  font-family: ui-monospace, monospace; letter-spacing: .04em; order: -1;
+}
+.net-label.direct { color: #3c3; }
+.net-label.relay  { color: #e53935; }
 .call-state-pill { color: var(--ink-soft); font-size: .85rem; }
 .call-iconbtn {
   border: 0; background: transparent; cursor: pointer; font-size: 1.1rem;
@@ -228,8 +232,8 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
 /* Compact single-row controls: hang up + mic/video toggles + flip + settings.
    flex-wrap is a safety net for very narrow screens; normally it's one line. */
 .call-controls {
-  display: flex; align-items: center; justify-content: center; gap: .4rem;
-  padding: .6rem .75rem; flex-wrap: wrap;
+  display: flex; align-items: center; justify-content: space-between; gap: .4rem;
+  padding: .6rem 1.25rem; flex-wrap: wrap;
   background: var(--bg-soft); border-top: 1px solid var(--line);
   padding-bottom: calc(.6rem + env(safe-area-inset-bottom));
 }
@@ -243,8 +247,9 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   -webkit-tap-highlight-color: transparent;
 }
 .callbtn:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-/* Hang up: bright red round button. */
+/* Hang up: bright red — a wider rounded pill (a tight circle was awkward to hit). */
 .callbtn-end {
+  width: auto; min-width: 72px; padding: 0 20px; border-radius: 22px;
   background: var(--danger); color: #fff;
   box-shadow: 0 4px 14px rgba(229,57,53,.4);
 }

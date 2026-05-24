@@ -2499,15 +2499,16 @@ async function flushOutboxFor(peerIdHex) {
 // end means the media goes through TURN.
 let netDotTimer = null
 async function refreshNetDot() {
-  const dot = $('cw-net-dot')
+  const el = $('cw-net')
   let s = null
   try { s = await call.getStats() } catch {}
   if (!s) return
   const relayed = s.local === 'relay' || s.remote === 'relay'
-  dot.classList.toggle('relay', relayed)
-  dot.classList.toggle('direct', !relayed)
-  dot.title = relayed ? t('net_relay') : t('net_direct')
-  dot.hidden = false
+  el.textContent = relayed ? 'stun' : 'direct'   // technical terms, kept literal
+  el.classList.toggle('relay', relayed)
+  el.classList.toggle('direct', !relayed)
+  el.title = relayed ? t('net_relay') : t('net_direct')
+  el.hidden = false
 }
 function startNetDot() {
   stopNetDot()
@@ -2516,7 +2517,7 @@ function startNetDot() {
 }
 function stopNetDot() {
   if (netDotTimer) { clearInterval(netDotTimer); netDotTimer = null }
-  const dot = $('cw-net-dot'); if (dot) { dot.hidden = true; dot.classList.remove('relay', 'direct') }
+  const el = $('cw-net'); if (el) { el.hidden = true; el.textContent = ''; el.classList.remove('relay', 'direct') }
 }
 
 /* =================================== stats overlay =================================== */

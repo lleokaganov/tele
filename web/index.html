@@ -199,7 +199,6 @@
        collapses it to a draggable PiP square; closing (✕) hangs up. -->
   <div id="call-window" class="call-window" hidden>
     <div class="call-head">
-      <span id="cw-net-dot" class="net-dot" hidden></span>
       <span id="cw-peer" class="call-peer">—</span>
       <span id="cw-state" class="call-state-pill">…</span>
       <button id="cw-min" class="call-iconbtn" data-i18n-title="minimize" data-i18n-aria="minimize" title="minimize" aria-label="minimize">▁</button>
@@ -215,6 +214,7 @@
          device settings. Toggles are lui sliders (checked = ON). Camera / mic /
          speaker / quality choices moved into a separate settings window (⚙). -->
     <div class="call-controls">
+      <span id="cw-net" class="net-label" hidden></span>
       <button id="hangup-btn" class="callbtn callbtn-end" data-i18n-title="hang_up" data-i18n-aria="hang_up" title="hang up" aria-label="hang up">📞</button>
       <label class="calltoggle" data-i18n-title="mic" title="microphone">
         <span class="cic">🎤</span>
