@@ -441,11 +441,24 @@ function escapeHtml(s) {
 
 /* =================================== INTRO_FROM handler =================================== */
 
+// A contact's "type" (person / claude / device / service / sim …) rides in the
+// introduced nickname as an optional "name␟type" tag (␟ = U+241F unit separator),
+// so it travels without changing the wire/QR format. Absent tag = person (we
+// simply don't store a type — per the agreed model where person = no type field).
+const NICK_TYPE_SEP = '␟'
+function splitNickType(raw) {
+  const s = String(raw || '')
+  const i = s.indexOf(NICK_TYPE_SEP)
+  if (i < 0) return { name: s, type: null }
+  const type = s.slice(i + 1).trim().toLowerCase()
+  return { name: s.slice(0, i), type: (type && type !== 'person') ? type : null }
+}
+
 function handleIntroFrom(body) {
   if (body.length < 64) return
   const x_pub  = body.slice(0, 32)
   const ed_pub = body.slice(32, 64)
-  const nick   = new TextDecoder().decode(body.slice(64))
+  const { name: nick, type: introType } = splitNickType(new TextDecoder().decode(body.slice(64)))
   // Reconstruct the K0…-QR string from the keys so the peer entry is
   // identical to one added via paste/invite (single source of truth).
   const combined = new Uint8Array(64)
@@ -459,11 +472,15 @@ function handleIntroFrom(body) {
   const wasNew = !peerBook[idHex]
   // Preserve any local nickname if the user already named this peer; only
   // adopt the introduced nickname for fresh entries.
-  peerBook[idHex] = {
+  const entry = {
     qr,
     label: peerBook[idHex]?.label || nick || null,
     online: true,  // they're online, that's how they just introduced themselves
   }
+  // Keep an existing type, else adopt the introduced one. Absent = person.
+  const ty = peerBook[idHex]?.type || introType
+  if (ty) entry.type = ty
+  peerBook[idHex] = entry
   persist()
   renderContacts()
   subscribeAll()
@@ -1435,7 +1452,7 @@ if (incomingInvite) {
   $('add-error').hidden = true
   // Try to pre-fill the label from the nickname embedded in the QR.
   let inviteNick = ''
-  try { inviteNick = client.session.constructor.nicknameFromQr(incomingInvite) } catch {}
+  try { inviteNick = splitNickType(client.session.constructor.nicknameFromQr(incomingInvite)).name } catch {}
   $('add-label').value = inviteNick
   $('dialog-add').hidden = false
   clearInviteFromUrl()
@@ -1469,7 +1486,7 @@ $('add-qr').addEventListener('input', () => {
   const qr = extractQrText($('add-qr').value)
   if (!qr) return
   try {
-    const nick = client.session.constructor.nicknameFromQr(qr) // static
+    const nick = splitNickType(client.session.constructor.nicknameFromQr(qr)).name // static
     if (nick && !$('add-label').value) $('add-label').value = nick
   } catch {}
 })
@@ -2694,7 +2711,7 @@ function buildAccountInner() {
   const s = loadSeeds()
   const contacts = Object.entries(loadPeers())
     .filter(([, p]) => p?.qr)
-    .map(([id, p]) => ({ id, qr: p.qr, label: p.label || null }))
+    .map(([id, p]) => ({ id, qr: p.qr, label: p.label || null, ...(p.type ? { type: p.type } : {}) }))
   return {
     nickname: loadNickname() || null,
     seeds: s ? { x: u8ToB64(s.xSeed), ed: u8ToB64(s.edSeed) } : null,
@@ -2713,7 +2730,11 @@ function applyAccountInner(inner) {
   if (inner.nickname) saveNickname(inner.nickname)
   const peers = {}
   for (const c of (inner.contacts || [])) {
-    if (c?.id && c?.qr?.startsWith('K0')) peers[c.id] = { qr: c.qr, label: c.label || null }
+    if (c?.id && c?.qr?.startsWith('K0')) {
+      const e = { qr: c.qr, label: c.label || null }
+      if (c.type) e.type = c.type
+      peers[c.id] = e
+    }
   }
   savePeers(peers)
   toast(t('acc_imported'), 'success')
