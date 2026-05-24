@@ -2492,51 +2492,90 @@ function smartDefaultUrl() {
   return (location.protocol === 'https:' ? 'wss://' : 'ws://') + rest
 }
 
-// Build a plain-text contacts export and trigger a download.
-function exportContacts() {
-  const stored = loadPeers()
-  const lines = []
-  for (const [id, p] of Object.entries(stored)) {
-    if (!p?.qr) continue
-    const label = (p.label || '').replace(/[\r\n\t]/g, ' ')
-    lines.push(`${id} ${p.qr}${label ? ' ' + label : ''}`)
-  }
-  const blob = new Blob([lines.join('\n') + (lines.length ? '\n' : '')], { type: 'text/plain' })
+// base64 <-> Uint8Array for the 32-byte identity seeds.
+function u8ToB64(u8) { let s = ''; for (const b of u8) s += String.fromCharCode(b); return btoa(s) }
+function b64ToU8(s) { const d = atob(s); const u = new Uint8Array(d.length); for (let i = 0; i < d.length; i++) u[i] = d.charCodeAt(i); return u }
+
+// Generic file save: native share-sheet in the APK (Android WebView can't
+// download blob: URLs), plain <a download> on the web.
+async function saveTextFile(name, text, mime = 'application/json') {
+  const blob = new Blob([text], { type: mime })
+  if (NATIVE_APP) { await openFileNative({ name, blob }); return }
   const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = 'ws-tele-contacts.txt'
-  a.click()
+  a.href = URL.createObjectURL(blob); a.download = name; a.click()
   URL.revokeObjectURL(a.href)
+}
+
+// Account backup = SECRET identity keys + nickname + contacts. Deliberately NOT
+// chat history or files — those are not exported.
+function buildAccountBackup() {
+  const s = loadSeeds()
+  const contacts = Object.entries(loadPeers())
+    .filter(([, p]) => p?.qr)
+    .map(([id, p]) => ({ id, qr: p.qr, label: p.label || null }))
+  return {
+    v: 1, type: 'telefon-account',
+    nickname: loadNickname() || null,
+    seeds: s ? { x: u8ToB64(s.xSeed), ed: u8ToB64(s.edSeed) } : null,
+    contacts,
+  }
+}
+async function exportAccount() {
+  try {
+    await saveTextFile('telefon-account.json', JSON.stringify(buildAccountBackup(), null, 2))
+    toast(t('acc_exported'), 'success')
+  } catch (e) { toast(t('import_failed', { err: e }), 'error') }
+}
+
+// Restore an account backup (keys + nickname + contacts), then reload. Replacing
+// the identity is destructive, so confirm first. Falls back to the legacy
+// plain-text contacts format (which is additive, no identity change).
+async function importAccountFile(file) {
+  const text = await file.text()
+  let data = null
+  try { data = JSON.parse(text) } catch {}
+  if (data && data.type === 'telefon-account') {
+    window.lui.confirm({
+      icon: '⚠️', title: t('account'), text: t('acc_warn_import'),
+      danger: true, ok: t('acc_import'), cancel: t('cancel'),
+    }, () => {
+      if (data.seeds?.x && data.seeds?.ed) saveSeeds(b64ToU8(data.seeds.x), b64ToU8(data.seeds.ed))
+      if (data.nickname) saveNickname(data.nickname)
+      const peers = {}
+      for (const c of (data.contacts || [])) {
+        if (c?.id && c?.qr?.startsWith('K0')) peers[c.id] = { qr: c.qr, label: c.label || null }
+      }
+      savePeers(peers)
+      toast(t('acc_imported'), 'success')
+      setTimeout(() => location.reload(), 700)
+    })
+    return
+  }
+  // Legacy plain-text contacts: "id qr label" per line (additive).
+  let imported = 0
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line || line.startsWith('#')) continue
+    const m = line.match(/^(\S+)\s+(\S+)(?:\s+(.+))?$/)
+    if (!m) continue
+    const [, , qr, label] = m
+    if (!qr.startsWith('K0')) continue
+    try {
+      const idU8 = client.addPeerFromQr(qr)
+      peerBook[u8hex(idU8)] = { qr, label: label?.trim() || null, online: false }
+      imported++
+    } catch { /* skip bad entries */ }
+  }
+  if (imported === 0) { toast(t('acc_bad'), 'error'); return }
+  persist(); renderContacts(); subscribeAll()
+  toast(t('imported', { n: imported }), 'success')
 }
 
 $('import-file').onchange = async (e) => {
   const file = e.target.files[0]
   if (!file) return
-  try {
-    const text = await file.text()
-    let imported = 0
-    for (const raw of text.split(/\r?\n/)) {
-      const line = raw.trim()
-      if (!line || line.startsWith('#')) continue
-      // split into 3 tokens: id, qr, optional label (rest of line, may contain spaces)
-      const m = line.match(/^(\S+)\s+(\S+)(?:\s+(.+))?$/)
-      if (!m) continue
-      const [, idHex, qr, label] = m
-      if (!qr.startsWith('K0')) continue
-      try {
-        const idU8 = client.addPeerFromQr(qr)
-        const realId = u8hex(idU8)
-        peerBook[realId] = { qr, label: label?.trim() || null, online: false }
-        imported++
-      } catch { /* skip bad entries */ }
-    }
-    persist()
-    renderContacts()
-    subscribeAll()
-    toast(t('imported', { n: imported }), 'success')
-  } catch (e2) {
-    toast(t('import_failed', { err: e2 }), 'error')
-  }
+  try { await importAccountFile(file) }
+  catch (e2) { toast(t('import_failed', { err: e2 }), 'error') }
   e.target.value = ''
 }
 
@@ -2582,11 +2621,16 @@ function openSettings() {
       <h3>${escapeHtml(t('set_invite'))}</h3>
       <input id="set-invite" class="input" type="text" data-copy data-nopersist />
       <div class="muted" style="margin-top:6px">${escapeHtml(t('click_to_copy'))}</div>
-      <div class="set-row" style="margin-top:8px">
-        <button id="set-export" class="btn btn-ghost">${escapeHtml(t('export_contacts'))}</button>
-        <button id="set-import" class="btn btn-ghost">${escapeHtml(t('import_contacts'))}</button>
-      </div>
       <div class="muted" id="set-id" data-copy style="margin-top:8px"></div>
+    </div>
+
+    <div class="set-sec">
+      <h3>${escapeHtml(t('account'))}</h3>
+      <p class="muted" style="margin:4px 0 10px; line-height:1.4">${escapeHtml(t('acc_warn_export'))}</p>
+      <div class="set-row">
+        <button id="set-acc-export" class="btn btn-ghost">${escapeHtml(t('acc_export'))}</button>
+        <button id="set-acc-import" class="btn btn-ghost">${escapeHtml(t('acc_import'))}</button>
+      </div>
     </div>
 
     <div class="set-sec">
@@ -2694,8 +2738,13 @@ function openSettings() {
 
   // ── Invite / contacts ── (invite copies on click via data-copy; id too)
   q('#set-id').setAttribute('data-copy', u8hex(client.myId))   // copy clean hex, not "id: …"
-  q('#set-export').onclick = () => exportContacts()
-  q('#set-import').onclick = () => $('import-file').click()
+  q('#set-acc-export').onclick = () => {
+    lui.confirm({
+      icon: '🔑', title: t('account'), text: t('acc_warn_export'),
+      ok: t('acc_export'), cancel: t('cancel'),
+    }, exportAccount)
+  }
+  q('#set-acc-import').onclick = () => $('import-file').click()
 
   // ── Appearance ──
   q('#set-theme').onchange = (e) => lui.theme(e.target.value)
