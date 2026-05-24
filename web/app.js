@@ -2414,10 +2414,11 @@ function openSettings() {
       </div>
     </div>
 
-    <div class="set-sec">
-      <h3>Опасное</h3>
-      <button id="set-wipe" class="btn btn-danger">Wipe identity</button>
-    </div>`
+    <details class="set-sec set-danger">
+      <summary>Опасная зона</summary>
+      <p class="muted set-danger-note">Полностью стирает ключи, контакты и историю. Отменить нельзя — друзья перестанут вас узнавать.</p>
+      <a id="set-wipe" class="set-wipe-link" role="button" tabindex="0">Wipe identity</a>
+    </details>`
 
   const w = lui.win('Настройки', html)
   const q = (sel) => w.querySelector(sel)
@@ -2484,7 +2485,7 @@ function openSettings() {
   q('#set-update').onclick = () => checkAndUpdate()
 
   // ── Wipe identity (guarded by lui.confirm) ──
-  q('#set-wipe').onclick = () => {
+  const askWipe = () => {
     lui.confirm({
       icon: '🗑️',
       title: 'Wipe identity?',
@@ -2493,6 +2494,10 @@ function openSettings() {
       ok: 'Wipe',
       cancel: lui.t('cancel'),
     }, wipeIdentity)
+  }
+  q('#set-wipe').onclick = askWipe
+  q('#set-wipe').onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); askWipe() }
   }
 }
 

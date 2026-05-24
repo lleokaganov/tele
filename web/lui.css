@@ -36,11 +36,11 @@
 /* ── Dark theme: html[data-theme="dark"] flips the palette; orange-red accent
    stays. Set via lui.theme('dark'|'light'|'auto'). ─────────────────────────── */
 html[data-theme="dark"] {
-  --bg:        #15171c;
-  --bg-soft:   #1d2026;
+  --bg:        #1b1e24;     /* lifted off near-black so blocks don't vanish */
+  --bg-soft:   #262b34;     /* blocks/cards clearly lighter than the page */
   --ink:       #e9e6e2;
   --ink-soft:  #9a948c;
-  --line:      #2c303a;
+  --line:      #353b46;
   --danger:    #ff5b54;     /* a touch brighter so it reads on dark */
   --danger-d:  #e0463f;
   --sh-1: 0 1px 2px rgba(0,0,0,.45), 0 1px 3px rgba(0,0,0,.55);

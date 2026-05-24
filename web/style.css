@@ -473,4 +473,27 @@ html[data-theme="dark"] .msg.me    { background: rgba(255,98,0,.14); }
 .win-body .set-adv > summary { cursor: pointer; color: var(--ink-soft); font-size: .9rem; }
 .win-body .set-adv > label { display: block; margin: 10px 0 4px; font-size: .85rem; }
 .win-body .set-adv > .input { margin-bottom: 4px; }
+
+/* Danger zone: collapsed by default, wipe is a small inline link — never a
+   full-width red button sitting where the eye expects "Save". */
+.win-body .set-danger > summary {
+  cursor: pointer; color: var(--ink-soft); font-size: .9rem;
+  list-style: none; user-select: none;
+}
+.win-body .set-danger > summary::-webkit-details-marker { display: none; }
+.win-body .set-danger > summary::before { content: "⚠ "; opacity: .7; }
+.win-body .set-danger[open] > summary { color: var(--danger); }
+.win-body .set-danger-note { margin: 8px 0 12px; font-size: .85rem; line-height: 1.4; }
+.win-body .set-wipe-link {
+  display: inline-block; cursor: pointer;
+  color: var(--danger); font-size: .9rem; font-weight: 600;
+  padding: 6px 12px; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  border-radius: var(--r-sm, 8px); background: transparent;
+  text-decoration: none;
+}
+.win-body .set-wipe-link:hover,
+.win-body .set-wipe-link:focus-visible {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  outline: none;
+}
 .win-body #set-id { font-family: ui-monospace, monospace; font-size: .8rem; }
