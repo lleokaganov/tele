@@ -22,6 +22,10 @@
        telefon's dark color so there is no white flash and the main UI is
        untouched. lui windows/confirms still follow lui.theme(). */
     html, body { background: #1a1d22; color: #e8eaed; }
+    /* ...but inside lui windows/confirms, text must follow the lui theme (var
+       --ink), otherwise the pinned light page color would be invisible on a
+       light-theme window background. */
+    .win, .win-body, .confirm, .lui-menu { color: var(--ink); }
   </style>
   <script>
     /* Apply lui theme + language before first paint — no flash, correct lang.
@@ -215,45 +219,9 @@
     </div>
   </div>
 
-  <!-- ============================== DIALOG: settings ============================== -->
-  <div id="dialog-settings" class="dialog" hidden>
-    <div class="dialog-box">
-      <div class="dialog-title">Settings</div>
-      <label>My name</label>
-      <div class="dialog-buttons" style="justify-content:flex-start;flex-wrap:wrap">
-        <input id="my-name-input" type="text" maxlength="40" placeholder="your name" style="flex:1;min-width:0" />
-        <button id="my-name-save" class="secondary">Save</button>
-      </div>
-      <label>My invite link (share with a friend)</label>
-      <input id="my-invite" type="text" readonly />
-      <div class="dialog-buttons" style="justify-content:flex-start;flex-wrap:wrap">
-        <button id="copy-invite" class="secondary">Copy</button>
-        <button id="export-book" class="secondary">Export contacts</button>
-        <button id="import-book" class="secondary">Import contacts</button>
-        <input id="import-file" type="file" accept="text/plain,.txt" hidden />
-      </div>
-      <div class="dialog-text muted" id="my-id-line">id: —</div>
-
-      <details class="srv-config">
-        <summary>Server (advanced — for self-hosting)</summary>
-        <label>WebSocket URL</label>
-        <input id="cfg-ws-url" type="text" placeholder="wss://your-server/ws" />
-        <label>Server X25519 pub (hex)</label>
-        <input id="cfg-srv-xpub" type="text" placeholder="64 hex chars" />
-        <label>Server Ed25519 pub (hex)</label>
-        <input id="cfg-srv-edpub" type="text" placeholder="64 hex chars" />
-        <div class="dialog-buttons" style="justify-content:flex-start;flex-wrap:wrap">
-          <button id="cfg-save"  class="secondary">Save &amp; reload</button>
-          <button id="cfg-reset" class="secondary">Reset to default</button>
-        </div>
-      </details>
-
-      <div class="dialog-buttons">
-        <button id="wipe-id"        class="danger">Wipe my identity</button>
-        <button id="settings-close" class="primary">Close</button>
-      </div>
-    </div>
-  </div>
+  <!-- Settings now live in a lui window (see openSettings() in app.js).
+       Only the hidden file input is kept — the contacts import flow reuses it. -->
+  <input id="import-file" type="file" accept="text/plain,.txt" hidden />
 
   <!-- ============================== LIGHTBOX (full-screen image) ============================== -->
   <div id="lightbox" class="lightbox" hidden>

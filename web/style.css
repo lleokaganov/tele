@@ -417,3 +417,21 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   .my-video { width: 35%; max-width: 140px }
   .contact .id { display: none }
 }
+
+/* ============================== lui settings window ==============================
+ * Layout helpers for the settings window content (built in openSettings()).
+ * Colors come from lui (the window follows lui.theme()); these only handle
+ * spacing/flow. Scoped under .win-body so they never touch the main telefon UI. */
+.win-body .set-sec { margin: 0 0 22px; }
+.win-body .set-sec:last-child { margin-bottom: 4px; }
+.win-body .set-sec > h3 { margin: 0 0 10px; }
+.win-body .set-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.win-body .set-row > .input { flex: 1; min-width: 0; }
+.win-body .set-row > .btn { white-space: nowrap; }
+.win-body .set-adv { margin-top: 12px; }
+.win-body .set-adv > summary { cursor: pointer; color: var(--ink-soft); font-size: .9rem; }
+.win-body .set-adv > label { display: block; margin: 10px 0 4px; font-size: .85rem; }
+.win-body .set-adv > .input { margin-bottom: 4px; }
+.win-body #set-id { font-family: ui-monospace, monospace; font-size: .8rem; }

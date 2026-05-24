@@ -497,6 +497,9 @@ window.addEventListener('popstate', (e) => {
   const CapApp = window.Capacitor?.Plugins?.App
   if (!CapApp || !CapApp.addListener) return
   CapApp.addListener('backButton', () => {
+    // A lui window (e.g. Settings) takes priority — back closes it, not the app.
+    const topWin = document.querySelector('.win')
+    if (topWin && window.lui) { window.lui.closeWin(topWin); return }
     if (!$('lightbox').hidden) { closeLightbox(); return }
     if ($('screen-call').classList.contains('active')) {
       call.hangup()
@@ -2230,56 +2233,24 @@ function initDraggablePip() {
 
 /* =================================== settings dialog =================================== */
 
-$('btn-settings').onclick = () => {
-  $('my-invite').value   = buildInviteUrl(client.qrText(nickname || ''))
-  $('my-name-input').value = nickname || ''
-  $('my-id-line').textContent = `id: ${u8hex(client.myId)}`
-  // Populate server config fields (saved value, else current default).
-  const c = serverConfig()
-  $('cfg-ws-url').value   = c.url   || SRV_DEFAULTS.url
-  $('cfg-srv-xpub').value = c.xpub  || SRV_DEFAULTS.xpub
-  $('cfg-srv-edpub').value= c.edpub || SRV_DEFAULTS.edpub
-  $('dialog-settings').hidden = false
+// ── Settings window (lui) ────────────────────────────────────────────────────
+// The legacy #dialog-settings markup in index.html is no longer opened; the
+// settings UI is now a lui window built on demand. We keep the hidden #import-file
+// input around because the import flow reuses it.
+
+// Smart default WebSocket URL. In the native APK we want plain ws:// (the WebView
+// runs on https://localhost but cleartext is allowed via the manifest, and the
+// public relay is reachable over ws); in a browser we must match the page scheme
+// (https → wss, otherwise the browser blocks mixed content).
+function smartDefaultUrl() {
+  const base = SRV_DEFAULTS.url            // e.g. wss://tele.karlson.ru/ws
+  const rest = base.replace(/^wss?:\/\//, '')
+  if (NATIVE_APP) return 'ws://' + rest
+  return (location.protocol === 'https:' ? 'wss://' : 'ws://') + rest
 }
-$('settings-close').onclick = () => { $('dialog-settings').hidden = true }
-// Change own display name. New contacts get it via INTRODUCE; existing contacts
-// keep whatever label they already saved for us.
-$('my-name-save').onclick = () => {
-  const v = $('my-name-input').value.trim()
-  if (!v) { toast('Name cannot be empty'); return }
-  nickname = v
-  saveNickname(v)
-  $('my-nickname').textContent = v
-  $('my-invite').value = buildInviteUrl(client.qrText(nickname))
-  toast('Name updated')
-}
-$('cfg-save').onclick = () => {
-  const url = $('cfg-ws-url').value.trim()
-  const xp  = $('cfg-srv-xpub').value.trim().toLowerCase()
-  const ep  = $('cfg-srv-edpub').value.trim().toLowerCase()
-  if (xp && !/^[0-9a-f]{64}$/.test(xp)) { toast('X-pub: нужно 64 hex-символа', 'error'); return }
-  if (ep && !/^[0-9a-f]{64}$/.test(ep)) { toast('Ed-pub: нужно 64 hex-символа', 'error'); return }
-  // Only persist values that differ from the default (keep storage clean).
-  url && url !== SRV_DEFAULTS.url   ? localStorage.setItem('telefon_ws_url', url)   : localStorage.removeItem('telefon_ws_url')
-  xp  && xp  !== SRV_DEFAULTS.xpub  ? localStorage.setItem('telefon_srv_xpub', xp)  : localStorage.removeItem('telefon_srv_xpub')
-  ep  && ep  !== SRV_DEFAULTS.edpub ? localStorage.setItem('telefon_srv_edpub', ep) : localStorage.removeItem('telefon_srv_edpub')
-  toast('Сохранено, перезапуск…', 'success')
-  setTimeout(() => location.reload(), 600)
-}
-$('cfg-reset').onclick = () => {
-  localStorage.removeItem('telefon_ws_url')
-  localStorage.removeItem('telefon_srv_xpub')
-  localStorage.removeItem('telefon_srv_edpub')
-  toast('Сброшено на сервер по умолчанию, перезапуск…', 'success')
-  setTimeout(() => location.reload(), 600)
-}
-$('copy-invite').onclick = async () => {
-  await navigator.clipboard.writeText($('my-invite').value)
-  toast('copied', 'success')
-}
-// Plain-text export, one line per peer:
-//   <id_hex>  <qr_text>  <label with spaces>
-$('export-book').onclick = () => {
+
+// Build a plain-text contacts export and trigger a download.
+function exportContacts() {
   const stored = loadPeers()
   const lines = []
   for (const [id, p] of Object.entries(stored)) {
@@ -2294,7 +2265,7 @@ $('export-book').onclick = () => {
   a.click()
   URL.revokeObjectURL(a.href)
 }
-$('import-book').onclick = () => $('import-file').click()
+
 $('import-file').onchange = async (e) => {
   const file = e.target.files[0]
   if (!file) return
@@ -2325,14 +2296,189 @@ $('import-file').onchange = async (e) => {
   }
   e.target.value = ''
 }
-$('wipe-id').onclick = async () => {
-  if (!confirm('Wipe identity? All contacts AND chat history will be lost — your friends will no longer recognise you.')) return
-  await Storage.wipe()
-  wipeSeeds()
-  wipeNickname()
-  savePeers({})
-  location.reload()
+
+function wipeIdentity() {
+  ;(async () => {
+    await Storage.wipe()
+    wipeSeeds()
+    wipeNickname()
+    savePeers({})
+    location.reload()
+  })()
 }
+
+// Open the settings window. Built fresh each time so it shows current values.
+function openSettings() {
+  const lui = window.lui
+  const cur = serverConfig()
+  const curUrl   = cur.url   || smartDefaultUrl()
+  const curXpub  = cur.xpub  || SRV_DEFAULTS.xpub
+  const curEdpub = cur.edpub || SRV_DEFAULTS.edpub
+  const invite   = buildInviteUrl(client.qrText(nickname || ''))
+  const idLine   = `id: ${u8hex(client.myId)}`
+  const themeNow = lui.theme()                 // 'auto' | 'light' | 'dark'
+  const langNow  = lui.lang()                  // 'en' | 'ru' | 'uk'
+  const fxNow    = lui.setEffects()            // boolean
+  const verNow   = ($('build-tag')?.textContent || '').replace(/^build\s*/, '').trim() || '—'
+
+  const html = `
+    <div class="set-sec">
+      <h3>Моё имя</h3>
+      <div class="set-row">
+        <input id="set-name" class="input" type="text" maxlength="40" placeholder="ваше имя" data-nopersist />
+        <button id="set-name-save" class="btn btn-primary">OK</button>
+      </div>
+    </div>
+
+    <div class="set-sec">
+      <h3>Мой invite</h3>
+      <input id="set-invite" class="input" type="text" readonly data-nopersist />
+      <div class="set-row" style="margin-top:8px">
+        <button id="set-copy"   class="btn btn-ghost">Копировать</button>
+        <button id="set-export" class="btn btn-ghost">Экспорт контактов</button>
+        <button id="set-import" class="btn btn-ghost">Импорт контактов</button>
+      </div>
+      <div class="muted" id="set-id" style="margin-top:8px"></div>
+    </div>
+
+    <div class="set-sec">
+      <h3>Внешний вид</h3>
+      <div class="set-row" style="justify-content:space-between">
+        <span>Тема</span>
+        <span class="select">
+          <select id="set-theme" data-nopersist>
+            <option value="auto">Авто</option>
+            <option value="light">Светлая</option>
+            <option value="dark">Тёмная</option>
+          </select>
+        </span>
+      </div>
+      <div class="set-row" style="justify-content:space-between; margin-top:12px">
+        <span>Язык</span>
+        <span class="select">
+          <select id="set-lang" data-nopersist>
+            <option value="ru">Русский</option>
+            <option value="en">English</option>
+            <option value="uk">Українська</option>
+          </select>
+        </span>
+      </div>
+      <div class="set-row" style="justify-content:space-between; margin-top:12px">
+        <span>Эффекты (анимации, звук, вибро)</span>
+        <label class="toggle">
+          <input id="set-fx" type="checkbox" data-nopersist />
+          <span class="track"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="set-sec">
+      <h3>Сервер</h3>
+      <input id="set-url" class="input" type="text" placeholder="wss://your-server/ws" data-nopersist />
+      <div class="set-row" style="margin-top:8px">
+        <button id="set-srv-save"  class="btn btn-primary">Сохранить и перезапустить</button>
+        <button id="set-srv-reset" class="btn btn-ghost">Сбросить к дефолту</button>
+      </div>
+      <details class="set-adv">
+        <summary>Расширенное</summary>
+        <label class="muted">Server X25519 pub (hex)</label>
+        <input id="set-xpub"  class="input" type="text" placeholder="64 hex chars" data-nopersist />
+        <label class="muted">Server Ed25519 pub (hex)</label>
+        <input id="set-edpub" class="input" type="text" placeholder="64 hex chars" data-nopersist />
+      </details>
+    </div>
+
+    <div class="set-sec">
+      <h3>Обновление</h3>
+      <div class="set-row" style="justify-content:space-between">
+        <span class="muted">Версия ${escapeHtml(verNow)}</span>
+        <button id="set-update" class="btn btn-ghost">Проверить обновление</button>
+      </div>
+    </div>
+
+    <div class="set-sec">
+      <h3>Опасное</h3>
+      <button id="set-wipe" class="btn btn-danger">Wipe identity</button>
+    </div>`
+
+  const w = lui.win('Настройки', html)
+  const q = (sel) => w.querySelector(sel)
+
+  // Prefill values.
+  q('#set-name').value   = nickname || ''
+  q('#set-invite').value = invite
+  q('#set-id').textContent = idLine
+  q('#set-theme').value  = themeNow
+  q('#set-lang').value   = langNow
+  q('#set-fx').checked   = !!fxNow
+  q('#set-url').value    = curUrl
+  q('#set-xpub').value   = curXpub
+  q('#set-edpub').value  = curEdpub
+
+  // ── My name ──
+  q('#set-name-save').onclick = () => {
+    const v = q('#set-name').value.trim()
+    if (!v) { toast('Name cannot be empty', 'error'); return }
+    nickname = v
+    saveNickname(v)
+    $('my-nickname').textContent = v
+    q('#set-invite').value = buildInviteUrl(client.qrText(nickname))
+    lui.toast('Name updated')
+  }
+
+  // ── Invite / contacts ──
+  q('#set-copy').onclick = async () => {
+    try { await navigator.clipboard.writeText(q('#set-invite').value) } catch {}
+    lui.toast(lui.t('copied'))
+  }
+  q('#set-export').onclick = () => exportContacts()
+  q('#set-import').onclick = () => $('import-file').click()
+
+  // ── Appearance ──
+  q('#set-theme').onchange = (e) => lui.theme(e.target.value)
+  q('#set-lang').onchange  = (e) => lui.lang(e.target.value)
+  q('#set-fx').onchange    = (e) => lui.setEffects(e.target.checked)
+
+  // ── Server config ──
+  q('#set-srv-save').onclick = () => {
+    const url = q('#set-url').value.trim()
+    const xp  = q('#set-xpub').value.trim().toLowerCase()
+    const ep  = q('#set-edpub').value.trim().toLowerCase()
+    if (xp && !/^[0-9a-f]{64}$/.test(xp)) { toast('X-pub: нужно 64 hex-символа', 'error'); return }
+    if (ep && !/^[0-9a-f]{64}$/.test(ep)) { toast('Ed-pub: нужно 64 hex-символа', 'error'); return }
+    const dUrl = smartDefaultUrl()
+    // Only persist values that differ from the (smart) default — keep storage clean.
+    url && url !== dUrl               ? localStorage.setItem('telefon_ws_url', url)   : localStorage.removeItem('telefon_ws_url')
+    xp  && xp  !== SRV_DEFAULTS.xpub  ? localStorage.setItem('telefon_srv_xpub', xp)  : localStorage.removeItem('telefon_srv_xpub')
+    ep  && ep  !== SRV_DEFAULTS.edpub ? localStorage.setItem('telefon_srv_edpub', ep) : localStorage.removeItem('telefon_srv_edpub')
+    toast('Сохранено, перезапуск…', 'success')
+    setTimeout(() => location.reload(), 600)
+  }
+  q('#set-srv-reset').onclick = () => {
+    localStorage.removeItem('telefon_ws_url')
+    localStorage.removeItem('telefon_srv_xpub')
+    localStorage.removeItem('telefon_srv_edpub')
+    toast('Сброшено на сервер по умолчанию, перезапуск…', 'success')
+    setTimeout(() => location.reload(), 600)
+  }
+
+  // ── Update ──
+  q('#set-update').onclick = () => checkAndUpdate()
+
+  // ── Wipe identity (guarded by lui.confirm) ──
+  q('#set-wipe').onclick = () => {
+    lui.confirm({
+      icon: '🗑️',
+      title: 'Wipe identity?',
+      text: 'All contacts AND chat history will be lost — your friends will no longer recognise you.',
+      danger: true,
+      ok: 'Wipe',
+      cancel: lui.t('cancel'),
+    }, wipeIdentity)
+  }
+}
+
+$('btn-settings').onclick = openSettings
 
 /* =================================== final wiring =================================== */
 
