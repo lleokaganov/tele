@@ -224,6 +224,24 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   padding-bottom: calc(.75rem + env(safe-area-inset-bottom));
 }
 .call-controls .btn { flex: 1; min-width: 90px; }
+/* Hang up is the most important control: big, bright, always on its own row at
+   the top of the controls, impossible to miss. */
+.call-controls #hangup-btn {
+  flex: 1 0 100%; order: -1;
+  font-size: 1.05rem; font-weight: 700; padding: .9rem;
+  box-shadow: 0 4px 14px rgba(229,57,53,.4);
+}
+
+/* Direct hang-up shown only on the minimized PiP (so you can always stop). */
+.cw-mini-end { display: none; }
+.call-window.mini .cw-mini-end {
+  display: flex; align-items: center; justify-content: center;
+  position: absolute; top: 5px; right: 5px; z-index: 4;
+  width: 26px; height: 26px; padding: 0;
+  border: 0; border-radius: 50%; cursor: pointer;
+  background: var(--danger); color: #fff; font-size: .85rem; line-height: 1;
+  box-shadow: 0 2px 6px rgba(0,0,0,.4);
+}
 
 /* ── minimized call window (draggable PiP square, tap to expand) ──────────── */
 .call-window.mini {

@@ -479,7 +479,9 @@ async function openCallView(idHex) {
   $('search-bar').hidden = true
   $('search-info').textContent = ''
   refreshCallHeader()
-  resetCallButtons('idle')
+  // Opening a chat must NOT disturb an in-progress call window (it lives on top,
+  // independently). Only reflect whether the "📞" start button should show.
+  $('call-btn').hidden = callActive
   // Show the screen BEFORE filling the chat: a hidden container has no
   // layout, so scrollHeight reads 0 and the scroll-to-bottom is a no-op.
   showScreen('call')
@@ -583,42 +585,76 @@ function refreshCallHeader() {
 
 // (defined below as async — older sync stub no longer used)
 
-// Show/hide the floating call window expanded.
+// ── Floating call window ──────────────────────────────────────────────────────
+// The call window is open for the WHOLE call lifecycle — from the first ring,
+// through connecting, to connected — so you always see what's happening and can
+// always hang up. It is independent of which chat is on screen.
+let callActive = false                  // true between call start and a terminal state
+
+// Terminal states end the call (window closes). Anything else means a call is
+// in progress (calling / new / connecting / connected / disconnected).
+const CALL_TERMINAL = new Set(['idle', 'hangup', 'rejected', 'peer hangup', 'failed', 'closed'])
+
+function callStateLabel(s) {
+  switch (s) {
+    case 'calling':      return 'Calling…'
+    case 'new':
+    case 'connecting':   return 'Connecting…'
+    case 'connected':    return 'Connected'
+    case 'disconnected': return 'Reconnecting…'
+    case 'rejected':     return 'Declined'
+    case 'peer hangup':  return 'Peer hung up'
+    case 'failed':       return 'Connection failed'
+    case 'hangup':
+    case 'closed':
+    case 'idle':         return 'Call ended'
+    default:             return s
+  }
+}
+
 function clearWinInline(w) {
   // Wipe inline left/top/right/bottom left over from mini-window dragging so
   // the expanded CSS layout (inset / centering) governs again.
   w.style.left = w.style.top = w.style.right = w.style.bottom = ''
 }
-function showCallWindow() {
+// Open the window EXPANDED — used at the very start of a call.
+function openCallWindowExpanded() {
   const w = $('call-window')
   w.hidden = false
-  w.classList.remove('mini')   // always open expanded
+  w.classList.remove('mini')
   clearWinInline(w)
 }
+// Just ensure the window is visible WITHOUT touching the mini/expanded state —
+// used by state updates so a user-chosen minimize survives later events.
+function showCallWindow() { $('call-window').hidden = false }
 function hideCallWindow() {
   const w = $('call-window')
   w.hidden = true
   w.classList.remove('mini')
   clearWinInline(w)
 }
-function minimizeCall() { $('call-window').classList.add('mini') }
+function applyCallWindow() { callActive ? showCallWindow() : hideCallWindow() }
+function minimizeCall() { if (callActive) $('call-window').classList.add('mini') }
 function expandCall() {
   const w = $('call-window')
   w.classList.remove('mini')
   clearWinInline(w)
 }
+// Mark a call as starting and bring the window up expanded right away (before
+// any state event), so the dialing phase is visible and cancellable.
+function startCallUI() {
+  callActive = true
+  openCallWindowExpanded()
+  $('call-btn').hidden = true
+}
 
+// Driven by CallManager state events for the whole call lifecycle.
 function resetCallButtons(state) {
-  const inCall = state === 'connecting' || state === 'connected'
-  // The call now lives in its own floating window: showing/hiding the window
-  // is the whole UI lifecycle. Control buttons stay mounted inside it.
-  if (inCall) showCallWindow()
-  else        hideCallWindow()
+  callActive = !CALL_TERMINAL.has(state)
+  applyCallWindow()
   // Hide the in-topbar "📞" call button while a call is up.
-  $('call-btn').hidden = inCall
-  // Window header: live state + peer name. The window can outlive currentPeerId
-  // (the user may navigate away during a call), so fall back gracefully.
-  $('cw-state').textContent = state
+  $('call-btn').hidden = callActive
+  $('cw-state').textContent = callStateLabel(state)
   // Keep the last known name if we've navigated away (currentPeerId cleared)
   // mid-call — don't blank the header on a later state change.
   const lbl = (peerBook[currentPeerId]?.label) || (currentPeerId ? currentPeerId.slice(0, 8) : '')
@@ -1183,6 +1219,10 @@ $('incoming-accept').onclick = async () => {
   $('dialog-incoming').hidden = true
   stopAllRings()
   openCallView(idHex)
+  // Bring the call window up right away (expanded) — don't wait for the first
+  // connection-state event.
+  startCallUI()
+  $('cw-state').textContent = callStateLabel('connecting')
   await call.acceptIncoming(peerId)
 }
 $('incoming-reject').onclick = () => {
@@ -1936,6 +1976,12 @@ $('btn-back').onclick = () => {
 $('call-btn').onclick = () => {
   if (!currentPeerId) return
   const peerId = hexU8(currentPeerId)
+  // Open the call window immediately (expanded) so the dialing phase is visible
+  // and cancellable before any state event arrives.
+  startCallUI()
+  $('cw-state').textContent = callStateLabel('calling')
+  const p = peerBook[currentPeerId]
+  $('cw-peer').textContent = p?.label || currentPeerId.slice(0, 8)
   // Re-introduce ourselves first so the callee can decrypt our CALL_REQUEST
   // even if they don't yet have our keys (e.g. they were offline when the
   // initial INTRODUCE was sent right after we added their QR).
@@ -1951,6 +1997,9 @@ $('hangup-btn').onclick = () => call.hangup()
  * hangs up (onState→idle then hides the window via resetCallButtons). */
 $('cw-min').onclick   = minimizeCall
 $('cw-close').onclick = () => call.hangup()
+// Direct hang-up from the minimized PiP. stopPropagation so the window's
+// pointer handlers don't also treat it as a tap-to-expand.
+$('cw-mini-end').onclick = (e) => { e.stopPropagation(); call.hangup() }
 
 $('switch-cam').onclick = () => call.switchCamera()
 $('mute-btn').onclick   = () => {
@@ -2316,6 +2365,7 @@ function initCallWindowDrag() {
 
   win.addEventListener('pointerdown', (e) => {
     if (!win.classList.contains('mini')) return  // expanded window: not draggable
+    if (e.target.closest('#cw-mini-end')) return // the PiP hang-up button handles itself
     const pos = switchToLeftTop()
     baseLeft = pos.left
     baseTop  = pos.top
