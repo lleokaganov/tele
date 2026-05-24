@@ -260,6 +260,17 @@ function renderContacts() {
       if (Date.now() - lastContactMenuTs < 600) return
       openCallView(c.id)
     }
+    // Tapping the orange avatar circle starts a CALL directly (not the chat).
+    const avatar = li.querySelector('.avatar')
+    if (avatar) {
+      avatar.title = t('call')
+      avatar.style.cursor = 'pointer'
+      avatar.onclick = (e) => {
+        e.stopPropagation()                              // don't also open the chat
+        if (Date.now() - lastContactMenuTs < 600) return
+        startOutgoingCall(c.id)
+      }
+    }
     attachLongPress(li, c.id)
     ul.appendChild(li)
   }
@@ -2033,15 +2044,18 @@ $('btn-back').onclick = () => {
   // Pop our synthetic history entry so back/forward stays consistent.
   if (history.state?.screen === 'call') history.back()
 }
-$('call-btn').onclick = () => {
-  if (!currentPeerId) return
-  const peerId = hexU8(currentPeerId)
+// Start an outgoing call to a peer. Used by the in-chat 📞 button and by tapping
+// a contact's avatar in the list (call straight away, no chat first).
+function startOutgoingCall(idHex) {
+  if (!idHex || callActive) return   // ignore if a call is already up
+  currentPeerId = idHex
+  const peerId = hexU8(idHex)
   // Open the call window immediately (expanded) so the dialing phase is visible
   // and cancellable before any state event arrives.
   startCallUI()
   $('cw-state').textContent = callStateLabel('calling')
-  const p = peerBook[currentPeerId]
-  $('cw-peer').textContent = p?.label || currentPeerId.slice(0, 8)
+  const p = peerBook[idHex]
+  $('cw-peer').textContent = p?.label || idHex.slice(0, 8)
   // Re-introduce ourselves first so the callee can decrypt our CALL_REQUEST
   // even if they don't yet have our keys (e.g. they were offline when the
   // initial INTRODUCE was sent right after we added their QR).
@@ -2049,8 +2063,9 @@ $('call-btn').onclick = () => {
   call.call(peerId)
   playOutgoing()
   // Push-wake an offline callee so a backgrounded app can ring.
-  maybeWake(currentPeerId, true)  // true = call → ringtone push
+  maybeWake(idHex, true)  // true = call → ringtone push
 }
+$('call-btn').onclick = () => startOutgoingCall(currentPeerId)
 $('hangup-btn').onclick = () => call.hangup()
 
 /* Floating call-window chrome. Minimize collapses to a draggable PiP; close
