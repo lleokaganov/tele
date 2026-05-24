@@ -225,7 +225,11 @@ function focusables(root) {
 }
 function focusFirst(root) {
   const els = focusables(root)
-  const target = els.find((el) => !el.classList.contains('x')) || els[0] || root
+  // Skip the ✕ close AND text fields: auto-focusing a text input pops the
+  // mobile keyboard and covers half the screen before the user wants it.
+  // Prefer a button/non-text control, else focus the dialog container itself.
+  const isText = (el) => el.matches('textarea, input:not([type]), input[type=text], input[type=search], input[type=email], input[type=url], input[type=password], input[type=tel], input[type=number]')
+  const target = els.find((el) => !el.classList.contains('x') && !isText(el)) || root
   try { target.focus({ preventScroll: true }) } catch { try { target.focus() } catch {} }
 }
 function trapFocus(container) {

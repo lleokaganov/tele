@@ -211,9 +211,19 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   border-radius: var(--r-md); font-size: .9rem; word-wrap: break-word;
   display: inline-flex; align-items: flex-end; gap: .35rem;
 }
-/* Outgoing bubbles use the brand accent; incoming are neutral on bg-soft. */
-.msg.me   { background: var(--accent); color: #fff; align-self: flex-end; border-bottom-right-radius: var(--r-sm) }
+/* Outgoing = soft orange TINT + orange OUTLINE (calm in BOTH themes, no
+ * full-screen orange fill); incoming = neutral. Text stays ink-coloured. */
+.msg.me   { background: rgba(255,98,0,.10); color: var(--ink); border: 1.5px solid var(--accent); align-self: flex-end; border-bottom-right-radius: var(--r-sm) }
 .msg.them { background: var(--bg-soft); color: var(--ink); border: 1px solid var(--line); align-self: flex-start; border-bottom-left-radius: var(--r-sm) }
+.msg.me .msg-status, .msg.me .msg-edited { color: var(--ink-soft); }
+.msg.me .msg-link { color: var(--accent); }
+
+/* Dark theme chat: greyish (not black) canvas; incoming a shade lighter so it
+ * reads; outgoing tint a touch stronger on the darker canvas. */
+html[data-theme="dark"] #chat,
+html[data-theme="dark"] .chat-wrap { background: #20232a; }
+html[data-theme="dark"] .msg.them  { background: #2b3039; border-color: #363c46; }
+html[data-theme="dark"] .msg.me    { background: rgba(255,98,0,.14); }
 .msg-status {
   font-size: .7rem; color: rgba(255,255,255,.65);
   flex: 0 0 auto;
