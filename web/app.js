@@ -2573,8 +2573,8 @@ function openSettings() {
     <div class="set-sec">
       <h3>${escapeHtml(t('set_name'))}</h3>
       <div class="set-row">
-        <input id="set-name" class="input" type="text" maxlength="40" placeholder="${escapeHtml(t('set_name_ph'))}" data-nopersist />
-        <button id="set-name-save" class="btn btn-primary">${escapeHtml(t('ok'))}</button>
+        <span id="set-name-display" class="inline-edit" tabindex="0" role="button" title="${escapeHtml(t('tap_to_edit'))}"></span>
+        <input id="set-name" class="input" type="text" maxlength="40" placeholder="${escapeHtml(t('set_name_ph'))}" data-nopersist hidden />
       </div>
     </div>
 
@@ -2649,7 +2649,6 @@ function openSettings() {
   const q = (sel) => w.querySelector(sel)
 
   // Prefill values.
-  q('#set-name').value   = nickname || ''
   q('#set-invite').value = invite
   q('#set-id').textContent = idLine
   q('#set-theme').value  = themeNow
@@ -2659,16 +2658,41 @@ function openSettings() {
   q('#set-xpub').value   = curXpub
   q('#set-edpub').value  = curEdpub
 
-  // ── My name ──
-  q('#set-name-save').onclick = () => {
-    const v = q('#set-name').value.trim()
-    if (!v) { toast(t('name_empty'), 'error'); return }
-    nickname = v
-    saveNickname(v)
-    $('my-nickname').textContent = v
-    q('#set-invite').value = buildInviteUrl(client.qrText(nickname))
-    lui.toast(t('name_updated'))
+  // ── My name (inline edit: shown as text; tap → input; commit on blur/Enter,
+  //    no OK button — what you typed is your name) ──
+  const nameDisplay = q('#set-name-display')
+  const nameInput   = q('#set-name')
+  const showNameText = () => {
+    nameDisplay.textContent = nickname || t('set_name_ph')
+    nameDisplay.hidden = false
+    nameInput.hidden = true
   }
+  const enterNameEdit = () => {
+    nameInput.value = nickname || ''
+    nameDisplay.hidden = true
+    nameInput.hidden = false
+    nameInput.focus()
+    try { nameInput.select() } catch {}
+  }
+  const commitNameEdit = () => {
+    const v = nameInput.value.trim()
+    if (v && v !== nickname) {
+      nickname = v
+      saveNickname(v)
+      $('my-nickname').textContent = v
+      q('#set-invite').value = buildInviteUrl(client.qrText(nickname))
+      lui.toast(t('name_updated'))
+    }
+    showNameText()
+  }
+  nameDisplay.onclick = enterNameEdit
+  nameDisplay.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); enterNameEdit() } }
+  nameInput.onblur = commitNameEdit
+  nameInput.onkeydown = (e) => {
+    if (e.key === 'Enter')      { e.preventDefault(); nameInput.blur() }    // blur → commit
+    else if (e.key === 'Escape'){ e.preventDefault(); showNameText() }      // cancel
+  }
+  showNameText()
 
   // ── Invite / contacts ── (invite copies on click via data-copy; id too)
   q('#set-id').setAttribute('data-copy', u8hex(client.myId))   // copy clean hex, not "id: …"
@@ -2678,7 +2702,13 @@ function openSettings() {
   // ── Appearance ──
   q('#set-theme').onchange = (e) => lui.theme(e.target.value)
   q('#set-lang').onchange  = (e) => lui.lang(e.target.value)
-  q('#set-fx').onchange    = (e) => lui.setEffects(e.target.checked)
+  q('#set-fx').onchange    = (e) => {
+    const on = e.target.checked
+    lui.setEffects(on)
+    // Demo the effects right away when turning them ON, so the difference is
+    // felt: a sliding toast (motion), a chime (sound) and a buzz (haptics).
+    if (on) { lui.sound('ok'); lui.vibrate('ok'); lui.toast(t('effects_on')) }
+  }
 
   // ── Server config ──
   q('#set-srv-save').onclick = () => {

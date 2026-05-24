@@ -545,6 +545,19 @@ html[data-theme="dark"] .msg.me    { background: rgba(255,98,0,.14); }
 }
 .win-body .set-row > .input { flex: 1; min-width: 0; }
 .win-body .set-row > .btn { white-space: nowrap; }
+
+/* Inline-editable name: plain text with a pencil hint; click turns it into the
+   input next to it (no OK button — committed on blur/Enter). */
+.win-body .inline-edit {
+  flex: 1; min-width: 0; cursor: pointer; user-select: none;
+  padding: .5em .2em; font-weight: 600;
+  border-bottom: 1px dashed var(--line);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.win-body .inline-edit::after { content: ' ✏️'; opacity: .5; font-weight: 400; font-size: .85em; }
+.win-body .inline-edit:hover, .win-body .inline-edit:focus-visible {
+  border-bottom-color: var(--accent); outline: none;
+}
 .win-body .set-adv { margin-top: 12px; }
 .win-body .set-adv > summary { cursor: pointer; color: var(--ink-soft); font-size: .9rem; }
 .win-body .set-adv > label { display: block; margin: 10px 0 4px; font-size: .85rem; }
