@@ -617,12 +617,20 @@ function clearWinInline(w) {
   // the expanded CSS layout (inset / centering) governs again.
   w.style.left = w.style.top = w.style.right = w.style.bottom = ''
 }
+// Reset the self-view PiP back to its default CSS anchor (drop inline coords a
+// previous drag left behind).
+function resetMyVideoPos() {
+  const v = $('my-video')
+  v.style.left = v.style.top = v.style.right = v.style.bottom = ''
+}
 // Open the window EXPANDED — used at the very start of a call.
 function openCallWindowExpanded() {
   const w = $('call-window')
   w.hidden = false
   w.classList.remove('mini')
+  w.classList.add('no-remote')   // self-view fills the window until the peer connects
   clearWinInline(w)
+  resetMyVideoPos()
 }
 // Just ensure the window is visible WITHOUT touching the mini/expanded state —
 // used by state updates so a user-chosen minimize survives later events.
@@ -631,7 +639,9 @@ function hideCallWindow() {
   const w = $('call-window')
   w.hidden = true
   w.classList.remove('mini')
+  w.classList.remove('no-remote')
   clearWinInline(w)
+  resetMyVideoPos()
 }
 function applyCallWindow() { callActive ? showCallWindow() : hideCallWindow() }
 function minimizeCall() { if (callActive) $('call-window').classList.add('mini') }
@@ -1098,7 +1108,12 @@ function updateMessageBody(msgId, newBody) {
 const call = new CallManager(client, {
   log: (s) => console.log(s),
   onLocalStream:  (s) => { $('my-video').srcObject = s   || null },
-  onRemoteStream: (s) => { $('peer-video').srcObject = s || null },
+  onRemoteStream: (s) => {
+    $('peer-video').srcObject = s || null
+    // Until the remote video arrives the self-view fills the window (mirror to
+    // check yourself); once it connects, shrink the self-view to the corner PiP.
+    $('call-window').classList.toggle('no-remote', !s)
+  },
   onState: (s) => {
     // The call window is screen-independent — drive it from state directly,
     // not from whether the matching chat is currently open.
@@ -2296,6 +2311,9 @@ function initDraggablePip() {
   }
 
   pip.addEventListener('pointerdown', (e) => {
+    // While the self-view fills the window (no remote yet) it isn't a draggable
+    // PiP — skip so it doesn't get pinned to inline coords.
+    if ($('call-window').classList.contains('no-remote')) return
     // Establish a left/top baseline (handles the initial right/bottom anchor
     // and re-anchors after the stage was re-shown / resized).
     const pos = switchToLeftTop()

@@ -84,6 +84,11 @@ export class CallManager {
     this.peerId = peerId
     this.ui.onState('calling')
     this.client._sendPeer(peerId, CALL.REQUEST, new Uint8Array())
+    // Open the camera right away (after sending the ring so it isn't delayed by
+    // the permission prompt) so the caller sees their own self-view while
+    // waiting for an answer — time to fix their hair. _openMedia is idempotent,
+    // so the same stream is reused when the SDP offer is crafted on ACCEPT.
+    try { await this._openMedia() } catch (e) { this.ui.log('preview media: ' + e) }
   }
 
   hangup() {

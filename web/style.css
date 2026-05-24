@@ -162,7 +162,16 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   border-radius: var(--r-sm); border: 2px solid var(--bg-soft);
   object-fit: cover; background: #111;
   z-index: 2;
+  transform: scaleX(-1);   /* mirror the self-view, like a real mirror */
 }
+/* Before the peer's video arrives, the self-view fills the whole window so you
+   can clearly see and prepare yourself; it shrinks to the corner PiP on connect. */
+.call-window.no-remote .my-video {
+  inset: 0; right: auto; bottom: auto;
+  width: 100%; height: 100%; max-width: none; aspect-ratio: auto;
+  border: 0; border-radius: 0; z-index: 1;
+}
+.call-window.no-remote .peer-video { display: none; }
 /* Draggable PiP: touch-action:none stops the browser from scrolling the
  * page while the finger drags the mini-preview. */
 #my-video { touch-action: none; cursor: grab; }
