@@ -187,6 +187,38 @@ a { color: var(--accent); text-decoration: none; }
 .input:focus { outline: none; border-color: var(--accent);
                box-shadow: 0 0 0 3px rgba(255,98,0,.12); background: #fff; }
 
+/* ── Copy-on-click (lui.copy / data-copy) ─────────────────────────────────────
+   A readonly field or any label/cell that copies to the clipboard on click.
+   Fields get a trailing 📋 icon as a hint; the whole field is clickable too. */
+.lui-copyable { cursor: pointer; }
+.lui-copy-wrap { position: relative; display: block; }
+.lui-copy-wrap > .input,
+.lui-copy-wrap > input,
+.lui-copy-wrap > textarea { padding-right: 2.6em; }
+.lui-copy-btn {
+  position: absolute; right: .3em; top: 50%; transform: translateY(-50%);
+  border: 0; background: transparent; cursor: pointer; line-height: 1;
+  font-size: 1.05rem; padding: .35em .45em; border-radius: var(--r-sm);
+  opacity: .55; transition: opacity .15s, background .15s;
+}
+.lui-copy-btn:hover, .lui-copy-btn:focus-visible {
+  opacity: 1; outline: none;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+/* Plain labels / table cells made copyable: subtle hover affordance. */
+.lui-copyable:not(input):not(textarea) {
+  border-radius: 6px; transition: background .15s;
+}
+.lui-copyable:not(input):not(textarea):hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+/* Brief green flash confirming the copy. */
+.lui-copied { animation: lui-copied .6s ease; }
+@keyframes lui-copied {
+  0%   { box-shadow: 0 0 0 2px #2e9e5b; }
+  100% { box-shadow: 0 0 0 2px transparent; }
+}
+
 /* ── Swatches (show the palette) ──────────────────────────────────────────── */
 .swatches { display: flex; gap: 10px; flex-wrap: wrap; }
 .swatch { width: 84px; height: 56px; border-radius: var(--r-md); border: 1px solid var(--line);

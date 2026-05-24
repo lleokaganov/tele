@@ -2350,13 +2350,13 @@ function openSettings() {
 
     <div class="set-sec">
       <h3>Мой invite</h3>
-      <input id="set-invite" class="input" type="text" readonly data-nopersist />
+      <input id="set-invite" class="input" type="text" data-copy data-nopersist />
+      <div class="muted" style="margin-top:6px">Кликни по полю, чтобы скопировать.</div>
       <div class="set-row" style="margin-top:8px">
-        <button id="set-copy"   class="btn btn-ghost">Копировать</button>
         <button id="set-export" class="btn btn-ghost">Экспорт контактов</button>
         <button id="set-import" class="btn btn-ghost">Импорт контактов</button>
       </div>
-      <div class="muted" id="set-id" style="margin-top:8px"></div>
+      <div class="muted" id="set-id" data-copy style="margin-top:8px"></div>
     </div>
 
     <div class="set-sec">
@@ -2445,11 +2445,8 @@ function openSettings() {
     lui.toast('Name updated')
   }
 
-  // ── Invite / contacts ──
-  q('#set-copy').onclick = async () => {
-    try { await navigator.clipboard.writeText(q('#set-invite').value) } catch {}
-    lui.toast(lui.t('copied'))
-  }
+  // ── Invite / contacts ── (invite copies on click via data-copy; id too)
+  q('#set-id').setAttribute('data-copy', u8hex(client.myId))   // copy clean hex, not "id: …"
   q('#set-export').onclick = () => exportContacts()
   q('#set-import').onclick = () => $('import-file').click()
 

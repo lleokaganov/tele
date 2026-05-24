@@ -15,6 +15,8 @@
      lui.tabs(rootEl)                        — activate a .tabs block (auto on load)
      lui.dropdown(triggerEl, items[])        — context menu under a trigger
      lui.tip.show / lui.tip.hide             — tooltip control (auto via data-tip)
+    lui.copy(text, srcEl?)                  — copy to clipboard + "Copied ✓" feedback
+    lui.copyable(elOrSelector)              — make element(s) copy-on-click (auto via data-copy)
 
    CSS classes: .btn(.btn-primary/.btn-ghost/.btn-danger), .card, .tile/.tiles,
      .input, .select, .check, .toggle, .tabs/.tab-bar/.tab-panel, .win, .confirm,
@@ -136,6 +138,78 @@ function toast(msg) {
   _toastT = setTimeout(() => t.classList.remove('on'), 1800)
 }
 
+// ── Copy to clipboard ─────────────────────────────────────────────────────────
+// One-click copy for keys/ids/invites/table cells — no giant "Copy" button.
+//   lui.copy(text, srcEl?)      — copy + "Copied ✓" toast + haptic + flash
+//   lui.copyable(elOrSelector)  — wire elements to copy-on-click
+//   declarative: <input class="input" data-copy readonly value="…">  (copies own
+//     value, gets a trailing 📋 icon) or  <td data-copy>KEY</td>  (copies its text),
+//     or  data-copy="literal text"  to copy something other than the shown text.
+// Auto-wired on load and inside any window opened via lui.win().
+async function copyText(text) {
+  text = String(text ?? '')
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text); return true
+    }
+  } catch {}
+  try {                                   // fallback: works in plain-http WebViews
+    const ta = document.createElement('textarea')
+    ta.value = text; ta.setAttribute('readonly', '')
+    ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0'
+    document.body.appendChild(ta)
+    ta.select(); ta.setSelectionRange(0, ta.value.length)
+    const ok = document.execCommand('copy'); ta.remove(); return ok
+  } catch { return false }
+}
+async function copy(text, srcEl) {
+  const ok = await copyText(text)
+  if (ok) {
+    toast(t('copied') + ' ✓'); vibrate('ok')
+    if (srcEl) { srcEl.classList.add('lui-copied'); setTimeout(() => srcEl.classList.remove('lui-copied'), 600) }
+  } else { toast(t('copy') + ' ✕') }
+  return ok
+}
+function copyTextOf(el) {
+  const lit = el.getAttribute('data-copy')
+  if (lit) return lit
+  if ('value' in el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return el.value
+  return (el.textContent || '').trim()
+}
+function wireCopy(el) {
+  if (el._luiCopy) return
+  el._luiCopy = true
+  el.classList.add('lui-copyable')
+  const isField = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA'
+  if (isField) {
+    el.setAttribute('readonly', '')      // copy-fields are not editable
+    el.addEventListener('focus', () => { try { el.select() } catch {} })
+    if (!el.parentElement || !el.parentElement.classList.contains('lui-copy-wrap')) {
+      const wrap = document.createElement('span')
+      wrap.className = 'lui-copy-wrap'
+      el.parentNode.insertBefore(wrap, el); wrap.appendChild(el)
+      const ic = document.createElement('button')
+      ic.type = 'button'; ic.className = 'lui-copy-btn'; ic.textContent = '📋'
+      ic.setAttribute('aria-label', t('copy'))
+      ic.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); copy(copyTextOf(el), el) })
+      wrap.appendChild(ic)
+    }
+  } else {
+    el.setAttribute('role', el.getAttribute('role') || 'button')
+    if (!el.hasAttribute('tabindex')) el.tabIndex = 0
+    if (!el.hasAttribute('aria-label')) el.setAttribute('aria-label', t('copy'))
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); copy(copyTextOf(el), el) }
+    })
+  }
+  el.addEventListener('click', () => copy(copyTextOf(el), el))
+}
+function copyable(arg) {
+  if (typeof arg === 'string') document.querySelectorAll(arg).forEach(wireCopy)
+  else if (arg) wireCopy(arg)
+}
+function initCopy(root = document) { root.querySelectorAll('[data-copy]').forEach(wireCopy) }
+
 // ── Demo "tap → request lags → spinner → reply" ──────────────────────────────
 function fakeRequest(btn) {
   if (btn.classList.contains('loading')) return
@@ -203,6 +277,7 @@ function openWin(title, bodyHTML) {
   }                       // mobile: centered modal stack, no drag — inner scroll instead.
   document.body.appendChild(w)
   persistRestore(w)        // restore any drafts/state for id'd fields inside this window
+  initCopy(w)              // wire any [data-copy] elements inside this window
   WINS.add(w)
   if (mobile) {
     winStack.push(w)
@@ -733,6 +808,7 @@ function boot() {
   document.documentElement.lang = _lang
   initTabs()
   persistRestore()
+  initCopy()
 }
 if (document.readyState === 'loading') addEventListener('DOMContentLoaded', boot)
 else boot()
@@ -744,6 +820,7 @@ window.lui = {
   confirmBox, confirm: confirmBox,
   progress,
   tabs, dropdown, tip,
+  copy, copyable, copyText,
   persist,
   vibrate, sound,
   theme,
