@@ -178,11 +178,31 @@ export class WsClient {
 
   _scheduleReconnect() {
     this._setState('reconnect-in', `${(this.reconnectMs/1000)|0}s`)
-    setTimeout(() => {
+    if (this._reconnectTimer) clearTimeout(this._reconnectTimer)
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null
       if (this.closedManually) return
       this.reconnectMs = Math.min(this.reconnectMs * 2, RECONNECT_MAX_MS)
       this._open()
     }, this.reconnectMs)
+  }
+
+  // True only when the socket is open AND the handshake is done.
+  isConnected() {
+    return !!(this.ws && this.ws.readyState === 1 && this.session && this.session.isEstablished())
+  }
+
+  // Reconnect immediately instead of waiting out the backoff — call on app
+  // resume / before accepting a call, so a backgrounded socket comes back fast.
+  reconnectNow() {
+    this.closedManually = false
+    if (this.isConnected()) return
+    // A connect is already in flight (CONNECTING=0 or OPEN-but-handshaking=1) —
+    // let it finish rather than tearing it down.
+    if (this.ws && this.ws.readyState <= 1) return
+    if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null }
+    this.reconnectMs = RECONNECT_MIN_MS
+    this.session ? this._open() : this.connect()
   }
 
   _setState(s, detail) {

@@ -1338,6 +1338,11 @@ $('incoming-accept').onclick = async () => {
   // connection-state event.
   startCallUI()
   $('cw-state').textContent = callStateLabel('connecting')
+  // The app may have just been opened from a push while the socket was still
+  // reconnecting in the background — wait for a live connection before sending
+  // ACCEPT, otherwise it's fired into a dead socket and the call drops.
+  const ok = await ensureConnected()
+  if (!ok) { toast(t('connect_failed'), 'error'); try { call.hangup() } catch {} ; return }
   await call.acceptIncoming(peerId)
 }
 $('incoming-reject').onclick = () => {
@@ -1458,6 +1463,34 @@ client.connect()
     console.error('[boot] connect failed:', e)
     window.__diag && window.__diag('connect failed: ' + (e && e.stack || e))
   })
+
+// Keep the socket fresh on foreground. After the app is backgrounded the OS may
+// close the WebSocket; on resume we force an IMMEDIATE reconnect instead of
+// waiting out the exponential backoff — this is what makes answering a call
+// right after a push reliable.
+function wakeConnection() {
+  try { if (!client.isConnected || !client.isConnected()) client.reconnectNow && client.reconnectNow() } catch {}
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) wakeConnection() })
+;(() => {
+  const CapApp = window.Capacitor?.Plugins?.App
+  if (CapApp?.addListener) CapApp.addListener('appStateChange', ({ isActive }) => { if (isActive) wakeConnection() })
+})()
+
+// Wait until the socket is established (kicking an immediate reconnect first),
+// up to timeoutMs. Used before sending a call ACCEPT so it isn't lost.
+function ensureConnected(timeoutMs = 8000) {
+  if (client.isConnected && client.isConnected()) return Promise.resolve(true)
+  try { client.reconnectNow && client.reconnectNow() } catch {}
+  return new Promise((resolve) => {
+    const t0 = Date.now()
+    const iv = setInterval(() => {
+      if (client.isConnected && client.isConnected()) { clearInterval(iv); resolve(true) }
+      else if (Date.now() - t0 > timeoutMs) { clearInterval(iv); resolve(false) }
+    }, 150)
+  })
+}
+
 // Watchdog: if the WASM module or socket never settles, surface it instead
 // of silently sitting on "connecting".
 setTimeout(() => {
