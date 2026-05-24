@@ -1206,10 +1206,12 @@ const call = new CallManager(client, {
     if (s === 'connected') {
       $('mute-btn').textContent = t('mute')
       stopAllRings()
+      startNetDot()
     }
     if (s === 'hangup' || s === 'rejected' || s === 'peer hangup' || s === 'idle' || s === 'failed' || s === 'closed') {
       resetCallButtons('idle')
       stopAllRings()
+      stopNetDot()
     }
   },
   onText: async (peerId, msgId, text) => {
@@ -2439,6 +2441,32 @@ async function flushOutboxFor(peerIdHex) {
 }
 // Enter inserts a newline (textarea default); sending is ONLY via the send
 // button — per Leo's explicit preference. Deliberately no Enter-to-send.
+
+/* =============================== connection-type dot =============================== */
+// Small dot in the call header: green = direct P2P, orange = relayed via TURN
+// (our coturn). Polls getStats while connected; candidateType 'relay' on either
+// end means the media goes through TURN.
+let netDotTimer = null
+async function refreshNetDot() {
+  const dot = $('cw-net-dot')
+  let s = null
+  try { s = await call.getStats() } catch {}
+  if (!s) return
+  const relayed = s.local === 'relay' || s.remote === 'relay'
+  dot.classList.toggle('relay', relayed)
+  dot.classList.toggle('direct', !relayed)
+  dot.title = relayed ? t('net_relay') : t('net_direct')
+  dot.hidden = false
+}
+function startNetDot() {
+  stopNetDot()
+  refreshNetDot()
+  netDotTimer = setInterval(refreshNetDot, 3000)
+}
+function stopNetDot() {
+  if (netDotTimer) { clearInterval(netDotTimer); netDotTimer = null }
+  const dot = $('cw-net-dot'); if (dot) { dot.hidden = true; dot.classList.remove('relay', 'direct') }
+}
 
 /* =================================== stats overlay =================================== */
 

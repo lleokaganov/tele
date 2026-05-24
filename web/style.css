@@ -220,6 +220,10 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   padding: 10px 12px; background: var(--bg-soft); border-bottom: 1px solid var(--line);
 }
 .call-head .call-peer { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Connection-type dot: green = direct P2P, orange = relayed via TURN. */
+.net-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+.net-dot.direct { background: #3c3; box-shadow: 0 0 5px #3c3; }
+.net-dot.relay  { background: #f90; box-shadow: 0 0 5px #f90; }
 .call-state-pill { color: var(--ink-soft); font-size: .85rem; }
 .call-iconbtn {
   border: 0; background: transparent; cursor: pointer; font-size: 1.1rem;
