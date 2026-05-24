@@ -1419,7 +1419,34 @@ client.onServer = (msg) => {
     }
   } else if (msg.cmd === CMD.INTRO_FROM) {
     handleIntroFrom(msg.body)
+  } else if (msg.cmd === CMD.INFO) {
+    showServerInfo(msg.body)
   }
+}
+
+// Server-originated plain-text notice (CMD.INFO 0x88): show it to the user in a
+// simple modal. The text is UNTRUSTED (a compromised server could send anything),
+// so it's rendered with textContent only (never innerHTML — no HTML/script can
+// run) and length-capped; the worst a hostile server can do is pop up some text.
+function showServerInfo(bodyU8) {
+  let text = ''
+  try { text = new TextDecoder().decode(bodyU8).slice(0, 2000) } catch { return }
+  if (!text.trim()) return
+  const overlay = document.createElement('div')
+  overlay.className = 'dialog'
+  const box = document.createElement('div'); box.className = 'dialog-box'
+  const ttl = document.createElement('div'); ttl.className = 'dialog-title'; ttl.textContent = t('server_message')
+  const body = document.createElement('div'); body.className = 'dialog-text'
+  body.textContent = text                       // textContent = no HTML injection
+  body.style.cssText = 'white-space:pre-wrap; max-height:50vh; overflow-y:auto'
+  const btns = document.createElement('div'); btns.className = 'dialog-buttons'
+  const ok = document.createElement('button'); ok.className = 'primary'; ok.textContent = t('ok')
+  ok.onclick = () => overlay.remove()
+  btns.appendChild(ok)
+  box.append(ttl, body, btns)
+  overlay.appendChild(box)
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove() }
+  document.body.appendChild(overlay)
 }
 
 // Do NOT await: a hung WASM/WS connect must not block wiring up the UI

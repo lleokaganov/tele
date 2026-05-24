@@ -43,6 +43,7 @@ export const CMD = {
   MSG_DELETE:      0x28,
   MSG_EDIT:        0x29,
   READ_ACK:        0x2A,
+  INFO:            0x88,   // server-originated plain-text notice → shown to user
   ERROR:           0xFF,
 }
 
