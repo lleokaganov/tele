@@ -324,6 +324,9 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
 .msg.me   { background: rgba(255,98,0,.10); color: var(--ink); border: 1.5px solid var(--accent); align-self: flex-end; border-bottom-right-radius: var(--r-sm) }
 .msg.them { background: var(--bg-soft); color: var(--ink); border: 1px solid var(--line); align-self: flex-start; border-bottom-left-radius: var(--r-sm) }
 .msg.me .msg-status, .msg.me .msg-edited { color: var(--ink-soft); }
+/* Read receipt: ✓✓ turns blue once the peer has read it (delivered stays grey),
+ * so delivered vs read is distinguishable (WhatsApp/Telegram convention). */
+.msg.me .msg-status.read { color: #2e9bff; }
 .msg.me .msg-link { color: var(--accent); }
 
 /* Dark theme chat: greyish (not black) canvas; incoming a shade lighter so it
