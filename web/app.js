@@ -1545,54 +1545,28 @@ client.connect()
 // close the WebSocket; on resume we force an IMMEDIATE reconnect instead of
 // waiting out the exponential backoff — this is what makes answering a call
 // right after a push reliable.
+// Returning to the app, or regaining network, must guarantee a LIVE socket.
+// The server already pings every 20s (keeps a healthy socket alive and drops
+// dead ones), but a backgrounded mobile WebView often holds a dead-but-OPEN
+// socket the server has already dropped: readyState lies and the `close` event
+// never fires over the dead path, so the app thinks it's online and nothing
+// arrives until a manual restart. So don't trust isConnected() alone — if the
+// socket is closed OR has been silent suspiciously long, force a fresh one.
+// (No client-side keepalive packets: liveness is the server's job; we only
+// reconnect on real foreground/network events.)
 function wakeConnection() {
-  try { if (!client.isConnected || !client.isConnected()) client.reconnectNow && client.reconnectNow() } catch {}
+  try {
+    const stale = Date.now() - (client.lastRx || 0) > 30000
+    if (!client.isConnected() || stale) client.forceReconnect()
+  } catch {}
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) wakeConnection() })
+window.addEventListener('online', wakeConnection)
+window.addEventListener('focus', wakeConnection)
 ;(() => {
   const CapApp = window.Capacitor?.Plugins?.App
   if (CapApp?.addListener) CapApp.addListener('appStateChange', ({ isActive }) => { if (isActive) wakeConnection() })
 })()
-
-// ── Liveness heartbeat ──────────────────────────────────────────────────────
-// A mobile NAT can silently drop an idle socket WITHOUT a TCP FIN: the server
-// pings, gets no pong, and drops the session — but the close frame can't travel
-// back over the dead path, so the client's `close` never fires. isConnected()
-// keeps saying "online" while nothing actually arrives, until a manual app
-// restart opens a fresh socket. (This was the "messages stop arriving while I
-// sit in the app, reappear after reopen" bug.)
-// While foreground, watch for inbound silence; if a liveness probe draws no
-// reply, the socket has gone deaf → force a fresh one.
-const HB_INTERVAL_MS    = 11000  // how often we check
-const HB_SILENCE_MS     = 25000  // no inbound for this long → send a probe
-const HB_PROBE_GRACE_MS = 8000   // probe must draw a reply within this window
-let hbProbeAt = 0
-setInterval(() => {
-  if (document.hidden) { hbProbeAt = 0; return }   // background: push handles it
-  const now = Date.now()
-  // Socket actually closed and not already coming back → kick a reconnect.
-  if (!client.isConnected()) {
-    hbProbeAt = 0
-    if (!(client.ws && client.ws.readyState <= 1)) client.reconnectNow()
-    return
-  }
-  const lastRx = client.lastRx || 0
-  // Probe was answered (inbound advanced past it) → all good, clear it.
-  if (hbProbeAt && lastRx >= hbProbeAt) { hbProbeAt = 0; return }
-  // Probe went unanswered past the grace window → deaf socket, force reopen.
-  if (hbProbeAt && now - hbProbeAt > HB_PROBE_GRACE_MS) {
-    hbProbeAt = 0
-    client.forceReconnect()
-    return
-  }
-  // Quiet too long and no probe in flight → send one. subscribeAll() makes the
-  // server answer with PEER_ONLINE for any online peer, which bumps lastRx; if
-  // the socket is deaf no reply can arrive and we reopen above.
-  if (!hbProbeAt && now - lastRx > HB_SILENCE_MS && Object.keys(peerBook).length) {
-    hbProbeAt = now
-    subscribeAll()
-  }
-}, HB_INTERVAL_MS)
 
 // Wait until the socket is established (kicking an immediate reconnect first),
 // up to timeoutMs. Used before sending a call ACCEPT so it isn't lost.
