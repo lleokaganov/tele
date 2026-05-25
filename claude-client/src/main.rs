@@ -343,14 +343,25 @@ async fn main() -> anyhow::Result<()> {
         flush_outbox(&me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent).await;
 
         let mut poll = tokio::time::interval(Duration::from_millis(500));
+        // Liveness: the server emits a frame (binary, WS-ping, or plain-text "ping")
+        // at least every ~20s. If we see NOTHING for >50s the socket has silently
+        // gone dead (NAT drop / sleep) without a close event — force a reconnect.
+        let mut liveness = tokio::time::interval(Duration::from_secs(10));
+        let mut last_rx = std::time::Instant::now();
         eprintln!("[wschat] ready. type/append lines to send; incoming prints below.");
 
         loop {
             tokio::select! {
                 msg = ws.next() => {
+                    if matches!(msg, Some(Ok(_))) { last_rx = std::time::Instant::now(); }
                     match msg {
                         Some(Ok(Message::Binary(b))) => {
                             handle_incoming(&b, &me, &peer, &nick, &k_s2c, &k_c2s, &server_x_pub, &server_ed_vk, &mut ws, &mut seq, &mut sent).await;
+                        }
+                        Some(Ok(Message::Text(t))) => {
+                            // Server's plain-text keepalive; reply "pong". Any received
+                            // frame already refreshed last_rx above.
+                            if t == "ping" { let _ = ws.send(Message::Text("pong".to_string())).await; }
                         }
                         Some(Ok(Message::Ping(p))) => { let _ = ws.send(Message::Pong(p)).await; }
                         Some(Ok(Message::Close(_))) | None => {
@@ -377,6 +388,12 @@ async fn main() -> anyhow::Result<()> {
                                 send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent).await;
                             }
                         }
+                    }
+                }
+                _ = liveness.tick() => {
+                    if last_rx.elapsed() > Duration::from_secs(50) {
+                        eprintln!("[wschat] no frames for >50s — link dead, reconnecting");
+                        break;
                     }
                 }
                 _ = tokio::signal::ctrl_c() => { let _ = ws.close(None).await; break 'reconnect; }
