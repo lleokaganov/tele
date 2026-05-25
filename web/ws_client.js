@@ -36,6 +36,7 @@ export const CMD = {
   INTRO_FROM:      0x47,
   WAKE:            0x48,
   PUSH_REGISTER:   0x49,
+  SERVER_PING:     0x4A,   // server → client: VISIBLE app-level keepalive (empty body)
   DELIVERY_ACK:    0x27,
   FILE_OFFER:      0x24,
   FILE_CHUNK:      0x25,
