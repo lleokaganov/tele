@@ -126,6 +126,7 @@
       del_for_all: 'Delete for everyone',
       // contact menu
       rename: '✏️ Rename',
+      copy_contact: '📋 Copy contact',
       delete_contact: '🗑 Delete contact',
       clear_chat: '🧹 Clear chat',
       del_contact: '🗑 Delete',
@@ -1089,6 +1090,7 @@
       del_for_me: 'Удалить у меня',
       del_for_all: 'Удалить у всех',
       rename: '✏️ Переименовать',
+      copy_contact: '📋 Копировать контакт',
       delete_contact: '🗑 Удалить контакт',
       clear_chat: '🧹 Стереть переписку',
       del_contact: '🗑 Удалить',

@@ -352,6 +352,7 @@ function openContactMenu(idHex, x, y) {
     menu.appendChild(b)
   }
   item(t('rename'), () => openRenameDialog(idHex))
+  item(t('copy_contact'), () => copyContact(idHex))
   item(t('clear_chat'), () => clearContactChat(idHex))
   item(t('ban'), () => banContact(idHex), 'danger')
   item(t('del_contact'), () => openDeleteContactDialog(idHex), 'danger')
@@ -368,6 +369,14 @@ function openContactMenu(idHex, x, y) {
     document.addEventListener('click',       closeContactMenu, { once: true })
     document.addEventListener('contextmenu', closeContactMenu, { once: true })
   }, 0)
+}
+
+// Copy this contact's invite link — same shape as settings → "share my invite",
+// but for the selected peer (so you can hand someone else's contact to a third party).
+function copyContact(idHex) {
+  const p = peerBook[idHex]
+  if (!p || !p.qr) return
+  window.lui.copy(buildInviteUrl(p.qr))
 }
 
 function openRenameDialog(idHex) {
