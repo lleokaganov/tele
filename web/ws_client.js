@@ -36,7 +36,6 @@ export const CMD = {
   INTRO_FROM:      0x47,
   WAKE:            0x48,
   PUSH_REGISTER:   0x49,
-  SERVER_PING:     0x4A,   // server → client: VISIBLE app-level keepalive (empty body)
   DELIVERY_ACK:    0x27,
   FILE_OFFER:      0x24,
   FILE_CHUNK:      0x25,
@@ -80,6 +79,7 @@ export class WsClient {
     this.reconnectMs = RECONNECT_MIN_MS
     this.closedManually = false
     this.lastRx = 0   // ms timestamp of the last inbound frame, for liveness checks
+    this.appPingSeen = false   // set once we've seen a plain-text "ping" keepalive
 
     // Public callbacks the host page wires up.
     this.onState = (_state) => {}
@@ -134,6 +134,10 @@ export class WsClient {
     ws.addEventListener('error', () => console.log('[wsclient] error'))
     ws.onmessage = (ev) => {
       this.lastRx = Date.now()
+      // Plain-text keepalive OUTSIDE the encrypted protocol: the server sends a
+      // bare "ping" text frame; reply "pong" and DON'T feed it to the binary
+      // parser. Bumping lastRx above is what arms the staleness watchdog.
+      if (typeof ev.data === 'string') { if (ev.data === 'ping') { this.appPingSeen = true; try { this.ws.send('pong') } catch {} } return }
       const data = new Uint8Array(ev.data)
       console.log('[wsclient] onmessage', data.length, 'bytes, established=', this.session.isEstablished())
       if (!this.session.isEstablished()) {

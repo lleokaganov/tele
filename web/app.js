@@ -1486,21 +1486,7 @@ function refreshConnText() {
 
 client.onConsole = (line) => console.log(line)
 
-// Set true on the first SERVER_PING we ever receive. Until then the staleness
-// watchdog stays disarmed: against an older server that never emits app-level
-// pings, lastRx would naturally go stale on a quiet-but-healthy socket and we
-// must NOT churn the connection. Once we've seen one ping we know this server
-// speaks the keepalive, so absence of pings becomes a reliable death signal.
-let serverAppPingSupported = false
-
 client.onServer = (msg) => {
-  if (msg.cmd === CMD.SERVER_PING) {
-    // Visible app-level keepalive. Nothing to show: ws_client's onmessage has
-    // already bumped client.lastRx for us. Just record that this server emits
-    // them, which arms the staleness watchdog below.
-    serverAppPingSupported = true
-    return
-  }
   if (msg.cmd === CMD.PEER_ONLINE) {
     for (let i = 0; i + 32 <= msg.body.length; i += 32) {
       const xPub = msg.body.slice(i, i + 32)
@@ -1582,17 +1568,18 @@ window.addEventListener('focus', wakeConnection)
   if (CapApp?.addListener) CapApp.addListener('appStateChange', ({ isActive }) => { if (isActive) wakeConnection() })
 })()
 
-// Passive staleness watchdog. The server emits a VISIBLE app-level ping every
-// ~20s (CMD.SERVER_PING); we only OBSERVE its arrival via client.lastRx and
-// send NOTHING ourselves (no probe packets — liveness stays the server's job).
-// If the app is foregrounded, the socket claims to be connected, yet no frame
-// (not even a ping) has arrived for ~2.5× the server interval, the socket has
-// silently gone deaf: force a fresh one. Disarmed until we've actually seen a
-// SERVER_PING, so against a server that doesn't emit them we never churn.
+// Passive staleness watchdog. The server emits a VISIBLE plain-text "ping"
+// keepalive every ~20s (outside the encrypted protocol); ws_client answers
+// "pong" and bumps client.lastRx — we only OBSERVE arrival here and send
+// NOTHING extra ourselves. If the app is foregrounded, the socket claims to be
+// connected, yet no frame (not even a ping) has arrived for ~2.5× the server
+// interval, the socket has silently gone deaf: force a fresh one. Disarmed
+// until we've actually seen a "ping" (client.appPingSeen), so against a server
+// that doesn't emit them we never churn.
 const STALE_MS = 50000   // ≈ 2.5 × the 20s server ping interval
 setInterval(() => {
   try {
-    if (!serverAppPingSupported) return            // backward-compatible: don't churn
+    if (!client.appPingSeen) return                // backward-compatible: don't churn
     if (document.hidden) return                    // OS may suspend us; foreground only
     if (!client.isConnected()) return              // close/reconnect already handles this
     if (Date.now() - (client.lastRx || 0) > STALE_MS) client.forceReconnect()

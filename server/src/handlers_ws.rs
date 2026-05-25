@@ -37,11 +37,6 @@ const CMD_INTRODUCE: u8 = 0x46;   // client → server: please tell <target> my 
 const CMD_INTRO_FROM: u8 = 0x47;  // server → client: here are <sender>'s keys
 const CMD_WAKE: u8 = 0x48;        // client → server → notifier: wake <target>
 const CMD_PUSH_REGISTER: u8 = 0x49; // client → server → notifier: my push token
-// server → client: a VISIBLE app-level keepalive. WS-protocol Ping/Pong are
-// invisible to the browser's JS, so a backgrounded WebView can't tell its
-// socket has gone deaf. This frame IS visible to JS (it lands in onmessage and
-// bumps lastRx); the client watches for its absence to detect a dead socket.
-pub(crate) const CMD_SERVER_PING: u8 = 0x4A;
 const CMD_ERROR: u8 = 0xFF;
 
 const ERR_ID_IN_USE: u8 = 1;
@@ -62,7 +57,7 @@ fn derive_client_id(x_pub: &[u8; 32]) -> ClientId {
 }
 
 /// Build an inner plaintext as `[message_id:u16 LE][cmd:u8][body]`.
-pub(crate) fn pack_inner(message_id: u16, cmd: u8, body: &[u8]) -> Vec<u8> {
+fn pack_inner(message_id: u16, cmd: u8, body: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(3 + body.len());
     v.extend_from_slice(&message_id.to_le_bytes());
     v.push(cmd);
@@ -72,7 +67,7 @@ pub(crate) fn pack_inner(message_id: u16, cmd: u8, body: &[u8]) -> Vec<u8> {
 
 /// Encrypt+sign a server-originated message and prepend a XOR-obfuscated
 /// zero header (which the client recognises as "this came from the server").
-pub(crate) fn build_server_frame(
+fn build_server_frame(
     recipient_x_pub: &[u8; 32],
     recipient_k_s2c: &[u8; 32],
     inner: &[u8],
@@ -152,6 +147,18 @@ async fn connection_task(
             Message::Pong(_) => {
                 let mut h = hub.write().await;
                 h.touch(&client_id);
+            }
+            // Plain-text keepalive OUTSIDE the encrypted protocol. The
+            // heartbeat task sends a bare "ping" text frame (visible to the
+            // client's JS); the client answers "pong". A client-originated
+            // "pong" refreshes last_seen exactly like a WS-protocol Pong.
+            Message::Text(text) => {
+                if text == "pong" {
+                    let mut h = hub.write().await;
+                    h.touch(&client_id);
+                } else if text == "ping" {
+                    let _ = session.text("pong").await;
+                }
             }
             Message::Close(reason) => {
                 let _ = session.close(reason).await;

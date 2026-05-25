@@ -10,8 +10,6 @@ use futures::future::AbortHandle;
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
-use crate::handlers_ws::{CMD_SERVER_PING, build_server_frame, pack_inner};
-
 /// 8-byte client identifier — first 8 bytes of SHA-256(X_client_pub).
 pub type ClientId = [u8; 8];
 
@@ -193,40 +191,31 @@ pub fn spawn_heartbeat(
             let now = std::time::Instant::now();
 
             // Snapshot under the read lock; everything that needs an `.await`
-            // (WS pings + the visible app-ping frames) happens AFTER the lock
-            // is dropped — never hold the lock across an await.
+            // (WS pings + the plain-text keepalive) happens AFTER the lock is
+            // dropped — never hold the lock across an await.
             let (to_drop, to_ping) = {
                 let hub_r = hub.read().await;
                 let mut drop_list: Vec<ClientId> = Vec::new();
-                // (id, ws, x_pub, k_s2c): x_pub/k_s2c let us build the
-                // client-visible app-ping frame below, outside the lock.
-                let mut ping_list: Vec<(ClientId, actix_ws::Session, [u8; 32], [u8; 32])> =
-                    Vec::new();
+                let mut ping_list: Vec<(ClientId, actix_ws::Session)> = Vec::new();
                 for (id, s) in hub_r.by_id.iter() {
                     if now.duration_since(s.last_seen) > heartbeat_timeout {
                         drop_list.push(*id);
                     } else if now.duration_since(s.last_ping) > ping_interval {
-                        ping_list.push((*id, s.ws.clone(), s.x_pub, s.k_s2c));
+                        ping_list.push((*id, s.ws.clone()));
                     }
                 }
                 (drop_list, ping_list)
             };
 
-            for (_, mut session, x_pub, k_s2c) in to_ping.iter().cloned() {
+            for (_, mut session) in to_ping.iter().cloned() {
                 // 1) WS-protocol ping: server-side liveness (drives the
                 //    last_seen/drop logic). Invisible to the client's JS.
                 let _ = session.ping(&[]).await;
-                // 2) VISIBLE app-level ping: an encrypted server-frame with an
-                //    empty body that lands in the client's onmessage handler so
-                //    JS can observe the socket is still alive (bumps lastRx).
-                match build_server_frame(&x_pub, &k_s2c, &pack_inner(0, CMD_SERVER_PING, &[])) {
-                    Ok(frame) => {
-                        let _ = session.binary(frame).await;
-                    }
-                    Err(e) => {
-                        tracing::warn!("server-ping frame build failed: {:?}", e);
-                    }
-                }
+                // 2) VISIBLE plain-text keepalive OUTSIDE the encrypted
+                //    protocol: a bare "ping" text frame that lands in the
+                //    client's onmessage handler so JS can observe the socket is
+                //    still alive (bumps lastRx); the client replies "pong".
+                let _ = session.text("ping").await;
             }
 
             if !to_drop.is_empty() || !to_ping.is_empty() {
@@ -242,7 +231,7 @@ pub fn spawn_heartbeat(
                         );
                     }
                 }
-                for (id, _, _, _) in &to_ping {
+                for (id, _) in &to_ping {
                     if let Some(s) = hub_w.get_mut(id) {
                         s.last_ping = now;
                     }
