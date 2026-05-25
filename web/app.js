@@ -1556,7 +1556,10 @@ client.connect()
 // reconnect on real foreground/network events.)
 function wakeConnection() {
   try {
-    const stale = Date.now() - (client.lastRx || 0) > 30000
+    // Server pings every 20s; a healthy gap is <=~22s. On wake, reconnect only
+    // if the last inbound is older than one ping cycle + jitter — don't tear
+    // down a live channel — and well under the server's 60s drop timeout.
+    const stale = Date.now() - (client.lastRx || 0) > 25000
     if (!client.isConnected() || stale) client.forceReconnect()
   } catch {}
 }
