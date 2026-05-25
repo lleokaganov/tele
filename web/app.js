@@ -1414,6 +1414,17 @@ const call = new CallManager(client, {
       try { call.rejectIncoming(peerId) } catch (e) { console.warn('reject banned', e) }
       return
     }
+    // Auto-accept: the user already tapped "Answer" on the push notification,
+    // which armed a short window. Skip the in-app prompt and pick up directly.
+    if (Date.now() < autoAcceptUntil) {
+      autoAcceptUntil = 0
+      try {
+        acceptIncomingCall(peerId, idHex)
+        return
+      } catch (e) {
+        console.warn('auto-accept failed, falling back to prompt', e)
+      }
+    }
     showIncoming(peerId, idHex)
   },
   // A call we missed (the caller rang out / cancelled before we picked up, then
@@ -1435,6 +1446,12 @@ let pendingIncoming = null
 let incomingTimer = null
 let currentCallId = null               // idHex of the call currently in progress (for the log)
 const INCOMING_TIMEOUT_MS = 45000
+
+// Auto-accept window. Tapping "Answer" on the native push notification opens the
+// app with a `telefon://answer` deep link; that arms a short window during which
+// the NEXT incoming call is accepted automatically, without a second in-app tap.
+let autoAcceptUntil = 0
+function armAutoAccept() { autoAcceptUntil = Date.now() + 20000 }
 
 // Show the incoming-call prompt. The ring and the dialog are started together
 // here, so a ringtone can NEVER play without its window. Duplicate / replayed
@@ -1461,9 +1478,9 @@ function clearIncoming() {
   pendingIncoming = null
 }
 
-$('incoming-accept').onclick = async () => {
-  if (!pendingIncoming) return
-  const { peerId, idHex } = pendingIncoming
+// Accept an incoming call. Shared by the manual "accept" button and the
+// auto-accept path (tapping "Answer" on the push notification).
+async function acceptIncomingCall(peerId, idHex) {
   logCall('accepted', idHex)
   currentCallId = idHex
   clearIncoming()
@@ -1478,6 +1495,12 @@ $('incoming-accept').onclick = async () => {
   const ok = await ensureConnected()
   if (!ok) { toast(t('connect_failed'), 'error'); try { call.hangup() } catch {} ; return }
   await call.acceptIncoming(peerId)
+}
+
+$('incoming-accept').onclick = async () => {
+  if (!pendingIncoming) return
+  const { peerId, idHex } = pendingIncoming
+  await acceptIncomingCall(peerId, idHex)
 }
 $('incoming-reject').onclick = () => {
   if (!pendingIncoming) return
@@ -1646,6 +1669,36 @@ window.addEventListener('focus', wakeConnection)
 ;(() => {
   const CapApp = window.Capacitor?.Plugins?.App
   if (CapApp?.addListener) CapApp.addListener('appStateChange', ({ isActive }) => { if (isActive) wakeConnection() })
+})()
+
+// Auto-accept wiring. When the user taps "Answer" on the native incoming-call
+// notification, MainActivity opens with a `telefon://answer` deep link. We arm
+// auto-accept from THREE sources, whichever fires first:
+//   1. App.getLaunchUrl()      — cold start (app was not running)
+//   2. App.addListener('appUrlOpen') — warm start (Capacitor surfaces the Uri)
+//   3. the `telefonAnswer` window event — native fallback fired by MainActivity
+//      (covers the case where Capacitor's appUrlOpen does not fire for an
+//      explicit-component ACTION_VIEW intent).
+// On the web (App plugin absent) this is skipped silently.
+;(() => {
+  const CapApp = window.Capacitor?.Plugins?.App
+  if (CapApp) {
+    try {
+      if (CapApp.getLaunchUrl) {
+        CapApp.getLaunchUrl().then((r) => {
+          if (r && r.url && r.url.includes('answer')) armAutoAccept()
+        }).catch(() => {})
+      }
+      if (CapApp.addListener) {
+        CapApp.addListener('appUrlOpen', (e) => {
+          if (e && e.url && e.url.includes('answer')) armAutoAccept()
+        })
+      }
+    } catch (e) { console.warn('auto-accept wiring', e) }
+  }
+  // Native fallback event — always listen; harmless when the native side never
+  // fires it.
+  window.addEventListener('telefonAnswer', () => armAutoAccept())
 })()
 
 // Passive staleness watchdog. The server emits a VISIBLE plain-text "ping"
@@ -2127,19 +2180,25 @@ function _ensureSelCopyBtn() {
   b.className = 'sel-copy-btn'
   b.textContent = t('copy')
   b.style.display = 'none'
-  // Don't let the press clear the selection before the click handler runs.
-  b.addEventListener('mousedown', (e) => e.preventDefault())
-  b.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false })
-  b.addEventListener('click', () => {
-    // NB: do NOT name this `t` — it would shadow the i18n t() and make the toast
-    // calls throw "t is not a function" (was crashing the app to a red screen).
-    const sel = (window.getSelection() || '').toString()
-    if (sel && sel.trim()) {
+  // Capture the selection on pointerdown, copy on pointerup — NOT on `click`.
+  // On touch, preventDefault on the down event keeps the selection alive but also
+  // suppresses the synthetic `click`, so a click handler almost never fired
+  // (~1 tap in 20). pointerdown/up cover mouse + touch reliably. (Also: do NOT
+  // name the captured text `t` — it would shadow the i18n t().)
+  let _capSel = ''
+  b.addEventListener('pointerdown', (e) => {
+    e.preventDefault()                                   // keep selection, don't steal focus
+    _capSel = (window.getSelection() || '').toString()
+  })
+  b.addEventListener('pointerup', (e) => {
+    e.preventDefault()
+    if (_capSel && _capSel.trim()) {
       // lui.copy is the WebView-safe clipboard path (navigator.clipboard is
       // often blocked in the Android WebView) and shows its own toast.
-      try { window.lui.copy(sel) }
-      catch (e) { console.warn('copy failed', e); toast(t('copy_failed')) }
+      try { window.lui.copy(_capSel) }
+      catch (err) { console.warn('copy failed', err); toast(t('copy_failed')) }
     }
+    _capSel = ''
     b.style.display = 'none'
     window.getSelection()?.removeAllRanges?.()
   })
