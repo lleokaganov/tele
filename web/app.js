@@ -1149,6 +1149,7 @@ function makeMsgShell(m) {
     const tick = document.createElement('span')
     tick.className = 'msg-status'
     tick.textContent = statusGlyph(m.status)
+    if (m.status === 'read') tick.classList.add('read')  // ✓✓ accent = read
     row.appendChild(tick)
   }
   // Explicit actions handle (⋮). Tapping it opens the per-message menu, so we
@@ -1191,7 +1192,7 @@ function updateRowStatus(msgId, status) {
   const row = renderedMessages.get(msgId)
   if (!row) return
   const tick = row.querySelector('.msg-status')
-  if (tick) tick.textContent = statusGlyph(status)
+  if (tick) { tick.textContent = statusGlyph(status); tick.classList.toggle('read', status === 'read') }
 }
 
 // Remove a message's chat row and any link-preview card attached to it.
