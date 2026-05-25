@@ -3332,6 +3332,11 @@ function openSettings() {
   // keeps its own heading+field (Leonid: "leave the invite construction as is").
   // The account-management group stays a titled block (two grouped actions).
   const html = `
+    <div class="set-sec">
+      <h3>${escapeHtml(t('set_invite'))}</h3>
+      <input id="set-invite" class="input" type="text" data-copy data-nopersist />
+    </div>
+
     <div class="set-line">
       <span class="set-label">${escapeHtml(t('set_name'))}</span>
       <span id="set-name-display" class="inline-edit" tabindex="0" role="button" title="${escapeHtml(t('tap_to_edit'))}"></span>
@@ -3398,11 +3403,6 @@ function openSettings() {
     <div class="set-line">
       <span class="set-label">${escapeHtml(t('call_log'))}</span>
       <button id="set-calllog" class="btn btn-ghost">${escapeHtml(t('open'))}</button>
-    </div>
-
-    <div class="set-sec">
-      <h3>${escapeHtml(t('set_invite'))}</h3>
-      <input id="set-invite" class="input" type="text" data-copy data-nopersist />
     </div>
 
     <details class="set-sec set-danger">
