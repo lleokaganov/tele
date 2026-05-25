@@ -107,6 +107,9 @@
       call_failed: 'Connection failed',
       call_ended: 'Call ended',
       is_calling: '{name} is calling.',
+      call_log: 'Call log',
+      call_log_empty: 'No calls logged yet.',
+      call_log_clear: 'Clear log',
       // connection states (topbar)
       state_offline: 'offline',
       state_connecting: 'connecting…',

@@ -100,6 +100,23 @@ function stopAllRings() {
   sounds.outgoing.pause(); sounds.outgoing.currentTime = 0
 }
 
+/* ── Call log (debug + visibility) ───────────────────────────────────────────
+ * A small persisted ring-buffer of call events so a ring is never a mystery:
+ * you can always see who/what/when. Events: incoming, accepted, declined,
+ * missed (rang out), dup (duplicate/replayed request ignored), outgoing,
+ * connected, ended. Viewer lives in Settings → Call log. */
+const CALL_LOG_KEY = 'telefon_call_log'
+function loadCallLog() { try { return JSON.parse(localStorage.getItem(CALL_LOG_KEY)) || [] } catch { return [] } }
+function logCall(ev, idHex, note) {
+  try {
+    const log = loadCallLog()
+    const name = (idHex && peerBook[idHex]?.label) || (idHex ? idHex.slice(0, 8) : '')
+    log.push({ t: Date.now(), ev, id: idHex || '', name, note: note || '' })
+    while (log.length > 80) log.shift()
+    localStorage.setItem(CALL_LOG_KEY, JSON.stringify(log))
+  } catch {}
+}
+
 function toast(text, kind = '', durationMs = 3500) {
   const el = document.createElement('div')
   el.className = 'toast' + (kind ? ' ' + kind : '')
@@ -1235,8 +1252,9 @@ const call = new CallManager(client, {
     }
     if (s === 'hangup' || s === 'rejected' || s === 'peer hangup' || s === 'idle' || s === 'failed' || s === 'closed') {
       resetCallButtons('idle')
-      stopAllRings()
+      clearIncoming()        // also stops a still-ringing prompt if the caller gave up
       stopNetDot()
+      if (currentCallId) { logCall('ended', currentCallId, s); currentCallId = null }
     }
   },
   onText: async (peerId, msgId, text) => {
@@ -1343,23 +1361,47 @@ const call = new CallManager(client, {
       try { call.rejectIncoming(peerId) } catch (e) { console.warn('reject banned', e) }
       return
     }
-    const name = peerBook[idHex]?.label || idHex.slice(0, 8)
-    $('incoming-name').textContent = t('is_calling', { name })
-    $('dialog-incoming').hidden = false
-    pendingIncoming = { peerId, idHex }
-    playIncoming()
+    showIncoming(peerId, idHex)
   },
 })
 call.attach()
 
 let pendingIncoming = null
+let incomingTimer = null
+let currentCallId = null               // idHex of the call currently in progress (for the log)
+const INCOMING_TIMEOUT_MS = 45000
+
+// Show the incoming-call prompt. The ring and the dialog are started together
+// here, so a ringtone can NEVER play without its window. Duplicate / replayed
+// requests while one is already pending are ignored (and logged); a stale call
+// nobody answers rings out after a timeout instead of forever.
+function showIncoming(peerId, idHex) {
+  if (pendingIncoming) { logCall('dup', idHex); return }
+  pendingIncoming = { peerId, idHex }
+  const name = peerBook[idHex]?.label || idHex.slice(0, 8)
+  $('incoming-name').textContent = t('is_calling', { name })
+  $('dialog-incoming').hidden = false
+  playIncoming()
+  logCall('incoming', idHex)
+  clearTimeout(incomingTimer)
+  incomingTimer = setTimeout(() => {
+    if (pendingIncoming) { logCall('missed', pendingIncoming.idHex); clearIncoming() }
+  }, INCOMING_TIMEOUT_MS)
+}
+// Tear the prompt down — always stops the ring AND hides the dialog together.
+function clearIncoming() {
+  clearTimeout(incomingTimer); incomingTimer = null
+  stopAllRings()
+  $('dialog-incoming').hidden = true
+  pendingIncoming = null
+}
 
 $('incoming-accept').onclick = async () => {
   if (!pendingIncoming) return
   const { peerId, idHex } = pendingIncoming
-  pendingIncoming = null
-  $('dialog-incoming').hidden = true
-  stopAllRings()
+  logCall('accepted', idHex)
+  currentCallId = idHex
+  clearIncoming()
   openCallView(idHex)
   // Bring the call window up right away (expanded) — don't wait for the first
   // connection-state event.
@@ -1374,10 +1416,9 @@ $('incoming-accept').onclick = async () => {
 }
 $('incoming-reject').onclick = () => {
   if (!pendingIncoming) return
+  logCall('declined', pendingIncoming.idHex)
   call.rejectIncoming(pendingIncoming.peerId)
-  pendingIncoming = null
-  $('dialog-incoming').hidden = true
-  stopAllRings()
+  clearIncoming()
 }
 
 /* =================================== client wiring =================================== */
@@ -2210,6 +2251,8 @@ function startOutgoingCall(idHex) {
   // initial INTRODUCE was sent right after we added their QR).
   client.introduce(peerId, nickname || '')
   call.call(peerId)
+  currentCallId = idHex
+  logCall('outgoing', idHex)
   playOutgoing()
   // Push-wake an offline callee so a backgrounded app can ring.
   maybeWake(idHex, true)  // true = call → ringtone push
@@ -2839,6 +2882,34 @@ function unbanContact(idHex) {
 // Blacklist window: list every banned contact with an Unblock button. Opened
 // from Settings. Unblocking restores the contact to the main list and removes
 // it here; the window re-renders in place (or shows the empty state).
+// Viewer for the call log (Settings → Call log). Newest first; clearable.
+function openCallLogWindow() {
+  const lui = window.lui
+  const ICON = { incoming: '◀', outgoing: '▶', accepted: '✅', declined: '⛔', missed: '❌', dup: '♻️', ended: '⏹' }
+  const fmt = (ts) => {
+    const d = new Date(ts), p = (n) => String(n).padStart(2, '0')
+    return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  }
+  const rowsHtml = () => {
+    const log = loadCallLog().slice().reverse()
+    if (!log.length) return `<div class="muted" style="padding:1rem;text-align:center">${escapeHtml(t('call_log_empty'))}</div>`
+    return log.map(e =>
+      `<div style="display:flex;gap:.5rem;align-items:center;padding:.35rem .2rem;border-bottom:1px solid var(--line);font-size:.85rem">`
+      + `<span style="width:1.4em;text-align:center">${ICON[e.ev] || '·'}</span>`
+      + `<span style="flex:0 0 5.5em;color:var(--ink-soft)">${escapeHtml(e.ev)}</span>`
+      + `<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(e.name || '—')}</span>`
+      + `<span style="color:var(--ink-soft);font-family:ui-monospace,monospace;font-size:.78rem">${fmt(e.t)}</span></div>`
+    ).join('')
+  }
+  const html = `<div class="call-log">${rowsHtml()}</div>`
+    + `<div style="text-align:right;margin-top:.6rem"><button id="cl-clear" class="btn btn-ghost">${escapeHtml(t('call_log_clear'))}</button></div>`
+  const w = lui.win(t('call_log'), html)
+  w.querySelector('#cl-clear').onclick = () => {
+    try { localStorage.removeItem(CALL_LOG_KEY) } catch {}
+    w.querySelector('.call-log').innerHTML = rowsHtml()
+  }
+}
+
 function openBlacklistWindow() {
   const w = window.lui.win(t('blacklist_title'), '<div class="set-blacklist"></div>')
   const box = w.querySelector('.set-blacklist')
@@ -3143,6 +3214,11 @@ function openSettings() {
       <button id="set-blacklist" class="btn btn-ghost">${escapeHtml(t('open'))}</button>
     </div>
 
+    <div class="set-line">
+      <span class="set-label">${escapeHtml(t('call_log'))}</span>
+      <button id="set-calllog" class="btn btn-ghost">${escapeHtml(t('open'))}</button>
+    </div>
+
     <div class="set-sec">
       <h3>${escapeHtml(t('set_invite'))}</h3>
       <input id="set-invite" class="input" type="text" data-copy data-nopersist />
@@ -3207,6 +3283,7 @@ function openSettings() {
   q('#set-acc-import').onclick = () => $('import-file').click()
   // ── Blocked contacts ── open the blacklist window.
   q('#set-blacklist').onclick = () => openBlacklistWindow()
+  q('#set-calllog').onclick = () => openCallLogWindow()
 
   // ── Appearance ──
   q('#set-theme').onchange = (e) => lui.theme(e.target.value)
