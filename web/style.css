@@ -203,8 +203,11 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
 }
 @media (min-width: 760px) {                          /* desktop: maximised window */
   .call-window {
-    inset: 2.5vh 2.5vw; top: auto; left: auto; transform: none;
-    width: auto; height: auto;
+    /* all four edges anchored → fills the screen minus a small margin.
+       (Do NOT set top/left:auto here — that unsets two anchors and the
+       window collapses to its content size in the bottom-right corner.) */
+    inset: 2.5vh 2.5vw;
+    transform: none;
     border-radius: 16px;
   }
 }
