@@ -187,6 +187,13 @@ const client = new WsClient({
 })
 await client.init()
 
+// In-flight delivery tracking for text messages. We send the TEXT alone (no
+// INTRODUCE) on every send; only if a message isn't delivery-acked while the
+// socket is alive do we assume the recipient lacks our keys and resend with an
+// INTRODUCE. msgId -> { peerId:Uint8Array, nick, text, retried:boolean, timer }.
+const pendingDelivery = new Map()
+const DELIVERY_WATCHDOG_MS = 5000
+
 /* =================================== contacts =================================== */
 
 // In-memory mirror of LocalStorage, plus a runtime "online" flag.
@@ -1290,6 +1297,13 @@ const call = new CallManager(client, {
     }
   },
   onDelivered: async (peerId, msgId) => {
+    // Delivery confirmed → recipient has our keys; cancel the introduce-resend
+    // watchdog for this message.
+    const entry = pendingDelivery.get(msgId)
+    if (entry) {
+      if (entry.timer) clearTimeout(entry.timer)
+      pendingDelivery.delete(msgId)
+    }
     await Storage.markStatus(msgId, 'delivered')
     updateRowStatus(msgId, 'delivered')
   },
@@ -1875,8 +1889,24 @@ $('btn-apk').onclick = () => {
   window.open('https://tele.karlson.ru/apk/telefon-latest.apk', '_blank')
 }
 
+// The installed version string used for update comparison. In the native APK the
+// #build-tag is the literal placeholder "build __BUILD__" (the build script only
+// rewrites digit patterns), so reading it would always look out-of-date. Prefer
+// Capacitor App.getInfo().version (= Android versionName, set correctly per
+// build); fall back to #build-tag on the web / when the plugin is absent.
+async function installedVersion() {
+  try {
+    const App = window.Capacitor?.Plugins?.App
+    if (App?.getInfo) {
+      const i = await App.getInfo()
+      if (i && i.version) return String(i.version).trim()
+    }
+  } catch {}
+  return ($('build-tag')?.textContent || '').replace(/^build\s*/, '').trim()
+}
+
 async function checkAndUpdate() {
-  const cur = ($('build-tag')?.textContent || '').replace(/^build\s*/, '').trim()
+  const cur = await installedVersion()
   let latest = ''
   try {
     const r = await fetch('https://tele.karlson.ru/apk/version.txt?t=' + Date.now())
@@ -2441,9 +2471,10 @@ $('send-text').onclick = async () => {
   $('chat').scrollTop = $('chat').scrollHeight
   $('text-input').value = ''
   autoGrowInput()
-  // Make sure recipient has our keys, then send. If WS is down the
-  // outbox entry stays and we retry on PEER_ONLINE.
-  client.introduce(peerId, nickname || '')
+  // Send the TEXT alone — no INTRODUCE per message (wasteful at scale). If WS is
+  // down the outbox entry stays and we retry on PEER_ONLINE. If the recipient
+  // lacks our keys, the delivery watchdog notices the missing ack and resends
+  // with an INTRODUCE.
   const ok = client.sendText(peerId, msgId, text)
   if (ok && persist) {
     await Storage.markStatus(msgId, 'sent')
@@ -2451,8 +2482,43 @@ $('send-text').onclick = async () => {
   } else if (ok) {
     updateRowStatus(msgId, 'sent')
   }
+  if (ok) {
+    // Arm the delivery watchdog: if no DELIVERY_ACK arrives while we're online,
+    // the recipient probably lacks our keys → introduce + resend (once).
+    const entry = { peerId, nick: nickname || '', text, retried: false, timer: null }
+    entry.timer = setTimeout(() => deliveryWatchdog(msgId), DELIVERY_WATCHDOG_MS)
+    pendingDelivery.set(msgId, entry)
+  }
   // If the recipient is offline, nudge the server to push-wake them.
   maybeWake(currentPeerId)
+}
+
+// Delivery watchdog: runs DELIVERY_WATCHDOG_MS after a text send (and again after
+// a retried send). Drives the "introduce only on delivery failure" recovery.
+function deliveryWatchdog(msgId) {
+  try {
+    const entry = pendingDelivery.get(msgId)
+    if (!entry) return  // already delivery-acked and cleared
+    if (!client.isConnected()) {
+      // Offline: the outbox / flushOutboxFor(PEER_ONLINE) path will redeliver.
+      // Stop watching (don't loop) but leave the entry harmlessly idle.
+      entry.timer = null
+      return
+    }
+    if (!entry.retried) {
+      // Online but no ack → recipient likely lacks our keys. Introduce + resend.
+      client.introduce(entry.peerId, entry.nick || '')
+      client.sendText(entry.peerId, msgId, entry.text)
+      entry.retried = true
+      entry.timer = setTimeout(() => deliveryWatchdog(msgId), DELIVERY_WATCHDOG_MS)
+    } else {
+      // Second timeout, still no ack: give up here. The outbox /
+      // flushOutboxFor on the next PEER_ONLINE will redeliver later.
+      pendingDelivery.delete(msgId)
+    }
+  } catch (e) {
+    console.warn('deliveryWatchdog', e)
+  }
 }
 
 /* =================================== file send =================================== */
@@ -3399,7 +3465,7 @@ function openSettings() {
     btn.classList.add('loading')              // brandbook spinner on the button
     status.textContent = ''
     const prog = lui.progress.task().run(2000) // a short progress bar for the wait
-    const cur = (verNow || '').trim()
+    const cur = await installedVersion()        // real installed version (not the #build-tag placeholder)
     let latest = '', failed = false
     try {
       const r = await fetch('https://tele.karlson.ru/apk/version.txt?t=' + Date.now())
