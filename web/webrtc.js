@@ -8,6 +8,11 @@
 //   0x34 SDP_OFFER        body: utf-8 SDP string
 //   0x35 SDP_ANSWER       body: utf-8 SDP string
 //   0x36 ICE_CANDIDATE    body: utf-8 JSON candidate
+//   0x37 CALL_MISSED      (initiator → callee, body: empty) — sent when a placed
+//                          call ends unanswered (rang out / cancelled while
+//                          ringing), so the callee learns they missed it. Peer
+//                          cmds 0x10–0x3F are opaque to the relay (forwarded
+//                          as-is), so this needs no server change.
 //
 // One active call at a time. The UI is responsible for offering the
 // "incoming call" prompt and binding the right buttons.
@@ -20,6 +25,7 @@ export const CALL = {
   SDP_OFFER:      0x34,
   SDP_ANSWER:     0x35,
   ICE_CANDIDATE:  0x36,
+  MISSED:         0x37,
 }
 
 // Outside of the CallManager — app.js wires these up separately, but we
@@ -61,6 +67,14 @@ function hexOf(u8) {
   return s
 }
 
+// Inverse of hexOf for fixed-length id hex (e.g. an 8-byte ClientId). Used to
+// rebuild a peer id from the hex we cached in _owedMissed when re-sending.
+function hexToBytes(hex) {
+  const out = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16)
+  return out
+}
+
 // 16-byte raw UUID ↔ canonical 8-4-4-4-12 hex string.
 function uuidToBytes(uuid) {
   const hex = uuid.replace(/-/g, '')
@@ -89,6 +103,12 @@ export class CallManager {
     // flips online (see onPeerOnline). { peerId: Uint8Array(8), since: ms }.
     this.ringing      = null
     this._ringTimer   = null
+    // Callees we owe a "missed call" notice. A placed call that ends while still
+    // ringing (rang out / cancelled before accept) means the callee never got a
+    // live ring — we try to deliver CALL.MISSED right away, and if that peer was
+    // offline we keep their hex id here and re-send when they come back online
+    // (onPeerOnline). Set of lower-case hex ids.
+    this._owedMissed  = new Set()
   }
 
   /** Wire this manager to a WsClient — dispatch its peer messages here. */
@@ -109,6 +129,7 @@ export class CallManager {
       // Still ringing after the timeout → no answer. Tear down the call.
       if (!this.ringing) return
       this.ui.log('no answer')
+      this._markMissed(this.ringing.peerId)  // capture callee before _clearRing nulls it
       this.hangup()                 // _clearRing + _tearDown('hangup') inside
     }, RING_TIMEOUT_MS)
     this.client._sendPeer(peerId, CALL.REQUEST, new Uint8Array())
@@ -125,21 +146,46 @@ export class CallManager {
     if (this._ringTimer) { clearTimeout(this._ringTimer); this._ringTimer = null }
   }
 
+  /** A placed call to `peerId` (Uint8Array(8)) ended unanswered. Remember the
+   *  callee as owed a missed-call notice and try to deliver CALL.MISSED now; if
+   *  they're offline the send is dropped by the relay and we re-send the moment
+   *  their presence flips online (onPeerOnline). Never throws. */
+  _markMissed(peerId) {
+    if (!peerId) return
+    const idHex = hexOf(peerId)
+    this._owedMissed.add(idHex)
+    try { this.client._sendPeer(peerId, CALL.MISSED, new Uint8Array()) }
+    catch (e) { this.ui.log('missed-notice: ' + e) }
+  }
+
   /** Presence flipped online for `idHex`. If a call to that exact peer is still
    *  ringing within the ring window, re-send CALL.REQUEST — they're online now
-   *  (woken by the call push), so no WAKE is needed. Never throws; no-op when
+   *  (woken by the call push), so no WAKE is needed. ADDITIONALLY, if we owe
+   *  this peer a missed-call notice (they were offline when their call rang out),
+   *  deliver CALL.MISSED now that they're reachable. Never throws; no-op when
    *  not ringing, ringing for someone else, or already past the window. */
   onPeerOnline(idHex) {
     const r = this.ringing
-    if (!r || !r.peerId) return
-    if (Date.now() - r.since > RING_TIMEOUT_MS) return
-    if (hexOf(r.peerId) !== idHex) return
-    try { this.client._sendPeer(r.peerId, CALL.REQUEST, new Uint8Array()) }
-    catch (e) { this.ui.log('re-ring: ' + e) }
+    if (r && r.peerId && Date.now() - r.since <= RING_TIMEOUT_MS && hexOf(r.peerId) === idHex) {
+      try { this.client._sendPeer(r.peerId, CALL.REQUEST, new Uint8Array()) }
+      catch (e) { this.ui.log('re-ring: ' + e) }
+      return  // actively ringing them — don't also fire a missed notice
+    }
+    if (this._owedMissed.has(idHex)) {
+      this._owedMissed.delete(idHex)
+      try { this.client._sendPeer(hexToBytes(idHex), CALL.MISSED, new Uint8Array()) }
+      catch (e) { this.ui.log('missed-notice (online): ' + e) }
+    }
   }
 
   hangup() {
+    // If the call is still ringing (never accepted) when it's torn down, the
+    // callee never got a live ring → owe them a missed-call notice. Capture the
+    // ringing peer before _clearRing nulls it. A call that was already accepted
+    // cleared `ringing` on CALL.ACCEPT, so this won't fire for answered calls.
+    const wasRinging = this.ringing ? this.ringing.peerId : null
     this._clearRing()
+    if (wasRinging) this._markMissed(wasRinging)
     if (this.peerId) {
       this.client._sendPeer(this.peerId, CALL.HANGUP, new Uint8Array())
     }
@@ -490,6 +536,14 @@ export class CallManager {
       const fileId = uuidFromBytes(msg.body.slice(0, 16))
       const msgId  = uuidFromBytes(msg.body.slice(16, 32))
       this.ui.onFileEnd(peerId, fileId, msgId)
+      return
+    }
+
+    // A call we missed: the caller placed it, it rang out (or they cancelled)
+    // before we picked up, and they're telling us after the fact. Not a live
+    // call — just notify the UI (log + toast + contact badge).
+    if (cmd === CALL.MISSED) {
+      this.ui.onMissedCall?.(peerId)
       return
     }
 

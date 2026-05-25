@@ -128,6 +128,18 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   text-align: center;
 }
 
+/* Missed-call count, shown next to the unread badge. Same pill shape as the
+ * unread badge but red (a missed call, not a new message) and carries a 📞
+ * glyph + count. Cleared when the chat is opened or the call log is viewed. */
+.contact .missed-badge {
+  flex: 0 0 auto;
+  height: 18px; padding: 0 6px;
+  border-radius: 9px;
+  background: #d33; color: #fff;
+  font-size: .72rem; font-weight: 700; line-height: 18px;
+  white-space: nowrap; text-align: center;
+}
+
 .empty {
   padding: 2rem 1rem; color: var(--ink-soft); font-size: .9rem; text-align: center;
 }

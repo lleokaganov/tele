@@ -234,6 +234,28 @@ function clearUnread(idHex) {
   renderContacts()
 }
 
+// Missed-call counters per contact (idHex -> count). Mirrors the unread badge:
+// persisted so the phone-icon badge survives reloads. Bumped when a CALL.MISSED
+// peer frame arrives; cleared when that contact's chat is opened or the call log
+// is viewed.
+const missedCalls = (() => {
+  try { return JSON.parse(localStorage.getItem('telefon_missed_calls') || '{}') } catch { return {} }
+})()
+function persistMissed() {
+  try { localStorage.setItem('telefon_missed_calls', JSON.stringify(missedCalls)) } catch {}
+}
+function bumpMissed(idHex) {
+  missedCalls[idHex] = (missedCalls[idHex] || 0) + 1
+  persistMissed()
+  renderContacts()
+}
+function clearMissed(idHex) {
+  if (!missedCalls[idHex]) return
+  delete missedCalls[idHex]
+  persistMissed()
+  renderContacts()
+}
+
 // Push all stored peers into the WASM session, ignore duplicates.
 for (const p of Object.values(peerBook)) {
   try { client.addPeerFromQr(p.qr) } catch (e) { console.warn('reload peer', e) }
@@ -251,7 +273,8 @@ function renderContacts() {
   const ul = $('contacts')
   ul.innerHTML = ''
   const entries = Object.entries(peerBook).map(([id, p]) => ({
-    id, label: p.label || '', online: !!p.online, unread: unread[id] || 0,
+    id, label: p.label || '', online: !!p.online,
+    unread: unread[id] || 0, missed: missedCalls[id] || 0,
   }))
   // Sort into four groups, alphabetical within each. Online always beats
   // offline at every unread level, so live contacts never sink below stale
@@ -270,10 +293,14 @@ function renderContacts() {
     const badge = c.unread > 0
       ? `<div class="unread-badge">${c.unread > 99 ? '99+' : c.unread}</div>`
       : ''
+    const missedBadge = c.missed > 0
+      ? `<div class="missed-badge">📞 ${c.missed > 99 ? '99+' : c.missed}</div>`
+      : ''
     li.innerHTML = `
       <div class="avatar ${c.online ? '' : 'off'}">${escapeHtml(contactInitials(c.label, c.id))}</div>
       <div class="name">${escapeHtml(c.label || t('unnamed'))}</div>
       <div class="id">${c.id.slice(0, 8)}</div>
+      ${missedBadge}
       ${badge}
       <div class="dot ${c.online ? 'dot-on' : 'dot-off'}"></div>
     `
@@ -430,6 +457,7 @@ function openDeleteContactDialog(idHex) {
     delete peerBook[idHex]
     persist()
     clearUnread(idHex)
+    clearMissed(idHex)
     try { await Storage.clearHistory(idHex) } catch (e) { console.warn('clearHistory', e) }
     try { client.removePeer(hexU8(idHex)) } catch (e) { console.warn('removePeer', e) }
     // If we're looking at this contact's chat, drop back to the list.
@@ -598,6 +626,7 @@ async function openCallView(idHex) {
   // incoming messages so the sender sees ✓✓, and clear the unread badge.
   markHistoryRead(idHex)
   clearUnread(idHex)
+  clearMissed(idHex)
   // Push a history entry so the browser/system back-button (Backspace on
   // desktop, swipe-back on Android, etc.) closes the call instead of
   // leaving it running invisibly behind the contacts list.
@@ -1386,6 +1415,18 @@ const call = new CallManager(client, {
       return
     }
     showIncoming(peerId, idHex)
+  },
+  // A call we missed (the caller rang out / cancelled before we picked up, then
+  // told us). Not a live call — record it: call-log entry, toast, contact badge.
+  onMissedCall: (peerId) => {
+    try {
+      const idHex = u8hex(peerId)
+      if (isBanned(idHex)) return  // ignore missed-call notices from blocked peers
+      logCall('missed', idHex)
+      bumpMissed(idHex)            // increments the persisted counter + re-renders
+      const name = peerBook[idHex]?.label || idHex.slice(0, 8)
+      toast(t('missed_call', { name }), 'info')
+    } catch (e) { console.warn('onMissedCall', e) }
   },
 })
 call.attach()
@@ -2981,6 +3022,7 @@ function banContact(idHex) {
     // Wipe the conversation immediately and remove the contact entirely.
     try { await Storage.clearHistory(idHex) } catch (e) { console.warn('clearHistory', e) }
     clearUnread(idHex)
+    clearMissed(idHex)
     delete peerBook[idHex]
     persist()
     try { client.removePeer(hexU8(idHex)) } catch (e) { console.warn('removePeer', e) }
@@ -3017,6 +3059,10 @@ function unbanContact(idHex) {
 // Viewer for the call log (Settings → Call log). Newest first; clearable.
 function openCallLogWindow() {
   const lui = window.lui
+  // Viewing the call log acknowledges every missed call — clear the badges.
+  let _missedCleared = false
+  for (const k of Object.keys(missedCalls)) { delete missedCalls[k]; _missedCleared = true }
+  if (_missedCleared) { persistMissed(); renderContacts() }
   const ICON = { incoming: '◀', outgoing: '▶', accepted: '✅', declined: '⛔', missed: '❌', dup: '♻️', ended: '⏹' }
   const fmt = (ts) => {
     const d = new Date(ts), p = (n) => String(n).padStart(2, '0')
@@ -3258,6 +3304,8 @@ function deleteAllChats() {
     await Storage.wipe()
     for (const k of Object.keys(unread)) delete unread[k]
     persistUnread()
+    for (const k of Object.keys(missedCalls)) delete missedCalls[k]
+    persistMissed()
     toast(t('chats_deleted'), 'success')
     setTimeout(() => location.reload(), 500)
   })()
