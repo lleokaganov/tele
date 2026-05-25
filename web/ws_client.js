@@ -78,6 +78,7 @@ export class WsClient {
     this.msgIdCounter = 1
     this.reconnectMs = RECONNECT_MIN_MS
     this.closedManually = false
+    this.lastRx = 0   // ms timestamp of the last inbound frame, for liveness checks
 
     // Public callbacks the host page wires up.
     this.onState = (_state) => {}
@@ -131,6 +132,7 @@ export class WsClient {
     ws.addEventListener('close', (e) => console.log('[wsclient] close', e.code, e.reason))
     ws.addEventListener('error', () => console.log('[wsclient] error'))
     ws.onmessage = (ev) => {
+      this.lastRx = Date.now()
       const data = new Uint8Array(ev.data)
       console.log('[wsclient] onmessage', data.length, 'bytes, established=', this.session.isEstablished())
       if (!this.session.isEstablished()) {
@@ -200,6 +202,22 @@ export class WsClient {
     // A connect is already in flight (CONNECTING=0 or OPEN-but-handshaking=1) —
     // let it finish rather than tearing it down.
     if (this.ws && this.ws.readyState <= 1) return
+    if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null }
+    this.reconnectMs = RECONNECT_MIN_MS
+    this.session ? this._open() : this.connect()
+  }
+
+  // Tear the current socket down UNCONDITIONALLY and open a fresh one — even
+  // when readyState still says OPEN. A mobile NAT can silently drop an idle
+  // connection without a TCP FIN, so `close` never fires and `isConnected()`
+  // keeps lying; reconnectNow() would no-op. The liveness heartbeat calls this
+  // when the socket has gone deaf.
+  forceReconnect() {
+    try {
+      if (this.ws) { this.ws.onclose = null; this.ws.onmessage = null; this.ws.onerror = null; this.ws.close() }
+    } catch {}
+    this.ws = null
+    this.closedManually = false
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null }
     this.reconnectMs = RECONNECT_MIN_MS
     this.session ? this._open() : this.connect()
