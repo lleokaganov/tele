@@ -13,6 +13,15 @@
 const DB_NAME = 'telefon.lleo.me'
 const TABLES  = ['messages', 'outbox', 'files']
 
+// Monotonic per-device save counter. Used to break `ts` ties so a batch of
+// messages that lands in the same millisecond (e.g. an outbox flush on
+// reconnect) keeps its arrival/send order instead of being scrambled by the
+// random message id. Persisted so it stays monotonic across reloads. (A real
+// sender-side send-time may be added to the wire later; this is the local
+// tie-breaker — option B.)
+let _seq = (() => { try { return parseInt(localStorage.getItem('telefon_msg_seq') || '0', 10) || 0 } catch { return 0 } })()
+function nextSeq() { _seq++; try { localStorage.setItem('telefon_msg_seq', String(_seq)) } catch {} ; return _seq }
+
 export const Storage = {
   // ---- lifecycle ----
   async init() {
@@ -38,7 +47,7 @@ export const Storage = {
   async saveOutgoing(peerId, body) {
     const id = crypto.randomUUID()
     const ts = Date.now()
-    await DB.add(DB_NAME, 'messages', { id, peer_id: peerId, dir: 'out', body, ts, status: 'pending' })
+    await DB.add(DB_NAME, 'messages', { id, peer_id: peerId, dir: 'out', body, ts, seq: nextSeq(), status: 'pending' })
     await DB.add(DB_NAME, 'outbox',   { id, attempts: 0, last_try_ts: 0 })
     return id
   },
@@ -50,7 +59,7 @@ export const Storage = {
     if (existing) return false
     await DB.add(DB_NAME, 'messages', {
       id, peer_id: peerId, dir: 'in', body,
-      ts: ts || Date.now(), status: 'received',
+      ts: ts || Date.now(), seq: nextSeq(), status: 'received',
     })
     return true
   },
@@ -70,7 +79,7 @@ export const Storage = {
   /** Return the full chat with a peer, oldest first. */
   async history(peerId) {
     const rows = await DB.get(DB_NAME, 'messages', (m) => m.peer_id === peerId)
-    rows.sort((a, b) => a.ts - b.ts)
+    rows.sort((a, b) => (a.ts - b.ts) || ((a.seq || 0) - (b.seq || 0)))
     return rows
   },
 
@@ -92,7 +101,7 @@ export const Storage = {
   async historyBefore(peerId, beforeTs, limit) {
     const rows = await DB.get(DB_NAME, 'messages',
       (m) => m.peer_id === peerId && m.ts <= beforeTs)
-    rows.sort((a, b) => a.ts - b.ts)
+    rows.sort((a, b) => (a.ts - b.ts) || ((a.seq || 0) - (b.seq || 0)))
     return limit && rows.length > limit ? rows.slice(-limit) : rows
   },
 
@@ -122,7 +131,7 @@ export const Storage = {
         out.push({ ...m, attempts: q.attempts })
       }
     }
-    out.sort((a, b) => a.ts - b.ts)
+    out.sort((a, b) => (a.ts - b.ts) || ((a.seq || 0) - (b.seq || 0)))
     return out
   },
 

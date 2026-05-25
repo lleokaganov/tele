@@ -2130,14 +2130,15 @@ function _ensureSelCopyBtn() {
   // Don't let the press clear the selection before the click handler runs.
   b.addEventListener('mousedown', (e) => e.preventDefault())
   b.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false })
-  b.addEventListener('click', async () => {
-    const t = (window.getSelection() || '').toString()
-    if (t && t.trim()) {
-      try {
-        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(t)
-        else document.execCommand('copy')
-        toast(t('copied'))
-      } catch (e) { console.warn('copy failed', e); toast(t('copy_failed')) }
+  b.addEventListener('click', () => {
+    // NB: do NOT name this `t` — it would shadow the i18n t() and make the toast
+    // calls throw "t is not a function" (was crashing the app to a red screen).
+    const sel = (window.getSelection() || '').toString()
+    if (sel && sel.trim()) {
+      // lui.copy is the WebView-safe clipboard path (navigator.clipboard is
+      // often blocked in the Android WebView) and shows its own toast.
+      try { window.lui.copy(sel) }
+      catch (e) { console.warn('copy failed', e); toast(t('copy_failed')) }
     }
     b.style.display = 'none'
     window.getSelection()?.removeAllRanges?.()
