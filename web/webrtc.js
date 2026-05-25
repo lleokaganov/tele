@@ -516,7 +516,19 @@ export class CallManager {
 
   async _onAnswer(sdp) {
     if (!this.pc) return
-    await this.pc.setRemoteDescription({ type: 'answer', sdp })
+    // An answer is only valid right after we sent an offer. Duplicate or late
+    // answers (relay re-delivery, reconnect replay) arrive when we're already
+    // 'stable' — applying one then throws InvalidStateError. Ignore those.
+    if (this.pc.signalingState !== 'have-local-offer') {
+      this.ui.log('stray answer ignored (state: ' + this.pc.signalingState + ')')
+      return
+    }
+    try {
+      await this.pc.setRemoteDescription({ type: 'answer', sdp })
+    } catch (e) {
+      this.ui.log('setRemoteDescription(answer) failed: ' + e)
+      return
+    }
     for (const c of this.pendingCandidates) {
       try { await this.pc.addIceCandidate(c) } catch (e) { this.ui.log('ice apply: ' + e) }
     }
