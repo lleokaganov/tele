@@ -1,6 +1,6 @@
 // Entry-point. Two-screen messenger-style UI.
 
-import { WsClient, CMD, u8hex }                                  from './ws_client.js'
+import { WsClient, CMD, ERR, u8hex }                             from './ws_client.js'
 import { CallManager }                                            from './webrtc.js'
 import { loadSeeds, saveSeeds, generateSeeds, wipeSeeds,
          loadPeers, savePeers,
@@ -1509,11 +1509,32 @@ client.onServer = (msg) => {
       // x_pub[..8] is the ClientId — try to flush anything we owe them.
       const idHex = u8hex(xPub.slice(0, 8))
       flushOutboxFor(idHex).catch(e => console.warn('flush', e))
+      // A held call re-rings the moment its callee comes back online.
+      try { call.onPeerOnline(idHex) } catch (e) { console.warn('reRing', e) }
     }
   } else if (msg.cmd === CMD.PEER_OFFLINE) {
     for (let i = 0; i + 32 <= msg.body.length; i += 32) {
       setOnline(msg.body.slice(i, i + 32), false)
     }
+  } else if (msg.cmd === CMD.ERROR && msg.body && msg.body[0] === ERR.RECIPIENT_OFFLINE && msg.body.length >= 9) {
+    // The server tells the SENDER when a peer-frame targeted an OFFLINE
+    // recipient. Body = [ERR_RECIPIENT_OFFLINE:1][target_id:8][orig_nonce:24].
+    // Our presence for them was stale (we thought they were online but they
+    // just dropped). Correct the peer book AND push-wake them so a normal
+    // message to a just-dropped peer still rings their phone.
+    try {
+      const tid   = msg.body.slice(1, 9)
+      const idHex = u8hex(tid)
+      if (peerBook[idHex]) {
+        // Reflect reality: this peer is offline, not online as we assumed.
+        if (peerBook[idHex].online) {
+          peerBook[idHex].online = false
+          renderContacts()
+          if (currentPeerId === idHex) refreshCallHeader()
+        }
+        client.sendWake(tid, false)
+      }
+    } catch (e) { console.warn('offline-error wake', e) }
   } else if (msg.cmd === CMD.INTRO_FROM) {
     handleIntroFrom(msg.body)
   } else if (msg.cmd === CMD.INFO) {

@@ -49,6 +49,18 @@ const TURN_SERVERS = [
 const enc = (s) => new TextEncoder().encode(s)
 const dec = (u) => new TextDecoder().decode(u)
 
+// How long the caller keeps a placed call "ringing" while waiting for the
+// callee to wake up / answer. After this it's torn down as "no answer".
+const RING_TIMEOUT_MS = 40000
+
+// Lower-case hex of a byte array (local copy so webrtc.js stays standalone;
+// matches u8hex in ws_client.js).
+function hexOf(u8) {
+  let s = ''
+  for (const b of u8) s += b.toString(16).padStart(2, '0')
+  return s
+}
+
 // 16-byte raw UUID ↔ canonical 8-4-4-4-12 hex string.
 function uuidToBytes(uuid) {
   const hex = uuid.replace(/-/g, '')
@@ -71,6 +83,12 @@ export class CallManager {
     this.pendingCandidates = []
     this.localStream = null
     this.preferredFacing = 'user'  // 'user' or 'environment'
+    // Outgoing-call "ringing" state. While set, the caller is waiting for the
+    // callee to accept; if the callee was offline (asleep) the initial
+    // CALL.REQUEST was dropped, so we re-send it the moment their presence
+    // flips online (see onPeerOnline). { peerId: Uint8Array(8), since: ms }.
+    this.ringing      = null
+    this._ringTimer   = null
   }
 
   /** Wire this manager to a WsClient — dispatch its peer messages here. */
@@ -83,6 +101,16 @@ export class CallManager {
   async call(peerId) {
     this.peerId = peerId
     this.ui.onState('calling')
+    // Start ringing: hold the call open so we can re-send CALL.REQUEST if the
+    // callee was offline and only comes online after the call push wakes them.
+    this.ringing = { peerId, since: Date.now() }
+    if (this._ringTimer) clearTimeout(this._ringTimer)
+    this._ringTimer = setTimeout(() => {
+      // Still ringing after the timeout → no answer. Tear down the call.
+      if (!this.ringing) return
+      this.ui.log('no answer')
+      this.hangup()                 // _clearRing + _tearDown('hangup') inside
+    }, RING_TIMEOUT_MS)
     this.client._sendPeer(peerId, CALL.REQUEST, new Uint8Array())
     // Open the camera right away (after sending the ring so it isn't delayed by
     // the permission prompt) so the caller sees their own self-view while
@@ -91,7 +119,27 @@ export class CallManager {
     try { await this._openMedia() } catch (e) { this.ui.log('preview media: ' + e) }
   }
 
+  /** Stop ringing: clear the held-call state and its timeout. Idempotent. */
+  _clearRing() {
+    this.ringing = null
+    if (this._ringTimer) { clearTimeout(this._ringTimer); this._ringTimer = null }
+  }
+
+  /** Presence flipped online for `idHex`. If a call to that exact peer is still
+   *  ringing within the ring window, re-send CALL.REQUEST — they're online now
+   *  (woken by the call push), so no WAKE is needed. Never throws; no-op when
+   *  not ringing, ringing for someone else, or already past the window. */
+  onPeerOnline(idHex) {
+    const r = this.ringing
+    if (!r || !r.peerId) return
+    if (Date.now() - r.since > RING_TIMEOUT_MS) return
+    if (hexOf(r.peerId) !== idHex) return
+    try { this.client._sendPeer(r.peerId, CALL.REQUEST, new Uint8Array()) }
+    catch (e) { this.ui.log('re-ring: ' + e) }
+  }
+
   hangup() {
+    this._clearRing()
     if (this.peerId) {
       this.client._sendPeer(this.peerId, CALL.HANGUP, new Uint8Array())
     }
@@ -451,14 +499,16 @@ export class CallManager {
     }
 
     if (cmd === CALL.ACCEPT) {
-      // We were the initiator and the other side just OK'd it.
-      // Build the SDP offer now.
+      // We were the initiator and the other side just OK'd it. Stop ringing
+      // (the call is answered) and build the SDP offer now.
+      this._clearRing()
       await this._initiate(peerId)
       return
     }
 
     if (cmd === CALL.REJECT) {
       this.ui.log('peer rejected the call')
+      this._clearRing()
       this._tearDown('rejected')
       return
     }
@@ -576,6 +626,7 @@ export class CallManager {
   }
 
   _tearDown(reason) {
+    this._clearRing()           // catch-all: never leave a ring timer dangling
     try {
       this.pc?.getSenders().forEach(s => s.track?.stop())
       this.pc?.close()
