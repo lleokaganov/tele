@@ -125,9 +125,10 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   -webkit-mask: url(./logo.svg) center / contain no-repeat;
           mask: url(./logo.svg) center / contain no-repeat;
 }
-.contact .avatar.avatar-info.off { background: var(--bg-soft); border: 1px solid var(--line); }
+/* Offline type avatars: just mute them — KEEP their coloured background, else the
+ * white ℹ️ glyph would land on the light --bg-soft and vanish (the bug Leo saw). */
 .contact .avatar.avatar-info.off, .contact .avatar.avatar-claude.off {
-  filter: grayscale(.4) opacity(.8);
+  filter: grayscale(.4) opacity(.85);
 }
 .contact .name { flex: 1; font-weight: 500 }
 .contact .id   { color: var(--ink-soft); font-size: .8rem; font-family: ui-monospace, monospace; }
