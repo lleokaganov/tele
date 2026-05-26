@@ -108,16 +108,25 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   font-weight: 600; font-size: .9rem; flex: 0 0 auto;
 }
 .contact .avatar.off { background: var(--bg-soft); color: var(--ink-soft); border: 1px solid var(--line) }
-/* Typed contacts: a neutral blue tint distinct from the orange person avatar;
- * the emoji (ℹ️ / 🤖) is the avatar content. Stays readable in light/dark via vars. */
-.contact .avatar.avatar-info,
-.contact .avatar.avatar-claude {
+/* Info contact: a neutral blue tint distinct from the orange person avatar;
+ * the ℹ️ emoji is the content. */
+.contact .avatar.avatar-info {
   background: color-mix(in srgb, #3b82f6 70%, var(--bg-soft));
   color: #fff; font-size: 1.1rem;
 }
-.contact .avatar.avatar-info.off,
-.contact .avatar.avatar-claude.off {
+/* Claude contact: a light circle carrying the Claude brand mark in its own
+ * orange (logo.svg is a black single-path silhouette → recolour via mask). */
+.contact .avatar.avatar-claude {
   background: var(--bg-soft); border: 1px solid var(--line);
+}
+.contact .avatar.avatar-claude .type-logo {
+  width: 66%; height: 66%; display: block;
+  background: #d97757;                                  /* Claude orange */
+  -webkit-mask: url(./logo.svg) center / contain no-repeat;
+          mask: url(./logo.svg) center / contain no-repeat;
+}
+.contact .avatar.avatar-info.off { background: var(--bg-soft); border: 1px solid var(--line); }
+.contact .avatar.avatar-info.off, .contact .avatar.avatar-claude.off {
   filter: grayscale(.4) opacity(.8);
 }
 .contact .name { flex: 1; font-weight: 500 }

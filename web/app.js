@@ -307,11 +307,12 @@ function renderContacts() {
       ? `<div class="missed-badge">📞 ${c.missed > 99 ? '99+' : c.missed}</div>`
       : ''
     // Typed contacts render an icon instead of initials and get a distinct
-    // avatar tint (info=ℹ️, claude=🤖); persons keep the orange initials.
+    // avatar (info=ℹ️, claude=the Claude brand mark in orange); persons keep
+    // the orange initials.
     let avatarClass = c.online ? '' : 'off'
     let avatarContent = escapeHtml(contactInitials(c.label, c.id))
     if (c.type === 'info')   { avatarClass += ' avatar-info';   avatarContent = 'ℹ️' }
-    if (c.type === 'claude') { avatarClass += ' avatar-claude'; avatarContent = '🤖' }
+    if (c.type === 'claude') { avatarClass += ' avatar-claude'; avatarContent = '<span class="type-logo"></span>' }
     li.innerHTML = `
       <div class="avatar ${avatarClass}">${avatarContent}</div>
       <div class="name">${escapeHtml(c.label || t('unnamed'))}</div>
