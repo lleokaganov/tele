@@ -47,6 +47,7 @@ const CMD_DELIVERY_ACK: u8 = 0x27;
 const CMD_READ_ACK: u8 = 0x2A;
 const CMD_SUBSCRIBE: u8 = 0x40;
 const CMD_PEER_ONLINE: u8 = 0x42;
+const CMD_PEER_OFFLINE: u8 = 0x43;
 const CMD_INTRODUCE: u8 = 0x46;
 const CMD_WAKE: u8 = 0x48;
 
@@ -348,6 +349,10 @@ async fn main() -> anyhow::Result<()> {
         // gone dead (NAT drop / sleep) without a close event — force a reconnect.
         let mut liveness = tokio::time::interval(Duration::from_secs(10));
         let mut last_rx = std::time::Instant::now();
+        // Peer-online tracked from the server's PEER_ONLINE/PEER_OFFLINE frames.
+        // Default-false (unknown until presence arrives) — send_text uses this to
+        // decide whether to fire a WAKE push for an offline recipient.
+        let mut peer_online = false;
         eprintln!("[wschat] ready. type/append lines to send; incoming prints below.");
 
         loop {
@@ -356,7 +361,7 @@ async fn main() -> anyhow::Result<()> {
                     if matches!(msg, Some(Ok(_))) { last_rx = std::time::Instant::now(); }
                     match msg {
                         Some(Ok(Message::Binary(b))) => {
-                            handle_incoming(&b, &me, &peer, &nick, &k_s2c, &k_c2s, &server_x_pub, &server_ed_vk, &mut ws, &mut seq, &mut sent).await;
+                            handle_incoming(&b, &me, &peer, &nick, &k_s2c, &k_c2s, &server_x_pub, &server_ed_vk, &mut ws, &mut seq, &mut sent, &mut peer_online).await;
                         }
                         Some(Ok(Message::Text(t))) => {
                             // Server's plain-text keepalive; reply "pong". Any received
@@ -375,7 +380,7 @@ async fn main() -> anyhow::Result<()> {
                 line = async { stdin_lines.as_mut().unwrap().next_line().await }, if stdin_lines.is_some() => {
                     match line {
                         Ok(Some(text)) if !text.trim().is_empty() => {
-                            send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent).await;
+                            send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, peer_online).await;
                         }
                         Ok(Some(_)) => {}
                         _ => { stdin_lines = None; }
@@ -385,7 +390,7 @@ async fn main() -> anyhow::Result<()> {
                     if let Some(path) = watch.as_ref() {
                         for text in read_new_lines(path, &mut watch_offset) {
                             if !text.trim().is_empty() {
-                                send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent).await;
+                                send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, peer_online).await;
                             }
                         }
                     }
@@ -480,6 +485,7 @@ async fn send_text(
     ws: &mut Ws,
     seq: &mut u16,
     sent: &mut HashMap<[u8; 16], OutMsg>,
+    peer_online: bool,
 ) {
     // Re-introduce (with name) so an offline-then-online peer still gets our keys.
     let _ = ws.send(Message::Binary(build_introduce(me, peer, nick, k_c2s, server_x_pub, *seq))).await;
@@ -493,6 +499,19 @@ async fn send_text(
     sent.insert(uuid, OutMsg { text: text.to_string(), delivered: false });
     let frame = build_text_frame(me, peer, k_c2s, &uuid, text);
     let _ = ws.send(Message::Binary(frame)).await;
+
+    // Wake the peer with a push if we believe they're offline (so the notifier
+    // can fire an FCM message-notification on their device). Skipped when online —
+    // avoids redundant pushes for live chats. peer_online is tracked from the
+    // server's PEER_ONLINE/PEER_OFFLINE presence frames; default-false at connect
+    // means we err on waking (at worst a single redundant push at startup).
+    if !peer_online {
+        let mut wbody = peer.id.to_vec();   // 8 bytes target id
+        wbody.push(0u8);                     // is_call=0 → msg push
+        let wframe = build_server_bound(me, server_x_pub, k_c2s, &pack_inner(*seq, CMD_WAKE, &wbody));
+        let _ = ws.send(Message::Binary(wframe)).await;
+        *seq = seq.wrapping_add(1);
+    }
 }
 
 /// Re-send every undelivered outbox message. Called on PEER_ONLINE and right
@@ -536,6 +555,7 @@ async fn handle_incoming(
     ws: &mut Ws,
     seq: &mut u16,
     sent: &mut HashMap<[u8; 16], OutMsg>,
+    peer_online: &mut bool,
 ) {
     use std::io::Write;
     if frame.len() < 8 + 24 + 16 + 64 {
@@ -546,11 +566,16 @@ async fn handle_incoming(
     xor_header(k_s2c, &nonce_24, &mut header);
 
     if header == [0u8; 8] {
-        // Server frame: we care about PEER_ONLINE to flush the outbox.
+        // Server frame: we care about PEER_ONLINE (flush + mark online) and
+        // PEER_OFFLINE (mark offline, so the next send fires a push WAKE).
         if let Some(inner) = decode_server_frame(frame, k_s2c, &me.x_priv, server_x_pub, server_ed_vk) {
             if inner.len() >= 3 && inner[2] == CMD_PEER_ONLINE {
+                *peer_online = true;
                 eprintln!("[wschat] peer online — flushing outbox");
                 flush_outbox(me, peer, nick, k_c2s, server_x_pub, ws, seq, sent).await;
+            } else if inner.len() >= 3 && inner[2] == CMD_PEER_OFFLINE {
+                *peer_online = false;
+                eprintln!("[wschat] peer offline");
             }
         }
         return;
