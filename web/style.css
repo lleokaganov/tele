@@ -108,6 +108,18 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   font-weight: 600; font-size: .9rem; flex: 0 0 auto;
 }
 .contact .avatar.off { background: var(--bg-soft); color: var(--ink-soft); border: 1px solid var(--line) }
+/* Typed contacts: a neutral blue tint distinct from the orange person avatar;
+ * the emoji (ℹ️ / 🤖) is the avatar content. Stays readable in light/dark via vars. */
+.contact .avatar.avatar-info,
+.contact .avatar.avatar-claude {
+  background: color-mix(in srgb, #3b82f6 70%, var(--bg-soft));
+  color: #fff; font-size: 1.1rem;
+}
+.contact .avatar.avatar-info.off,
+.contact .avatar.avatar-claude.off {
+  background: var(--bg-soft); border: 1px solid var(--line);
+  filter: grayscale(.4) opacity(.8);
+}
 .contact .name { flex: 1; font-weight: 500 }
 .contact .id   { color: var(--ink-soft); font-size: .8rem; font-family: ui-monospace, monospace; }
 .contact .dot  { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto }
@@ -441,6 +453,9 @@ html[data-theme="dark"] .msg.me    { background: rgba(255,98,0,.14); }
    destructive; simpler reads better. */
 .msg-menu-item.danger { color: var(--ink); background: transparent }
 
+/* The `display: flex` below would otherwise override the [hidden] attribute,
+ * so the composer never disappears for read-only (info) chats. Force it. */
+.chat-input[hidden] { display: none; }
 .chat-input {
   display: flex; gap: .5rem; padding: .5rem .75rem;
   /* Keep the text field above the Android/iOS bottom navigation bar. */

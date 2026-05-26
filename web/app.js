@@ -269,12 +269,22 @@ function contactInitials(label, idHex) {
   return idHex.slice(0, 2)
 }
 
+// A contact's "type" drives how it renders and what actions are allowed.
+// Stored on peerBook[id].type ('info' / 'claude'); absent = a normal person.
+//   info   → read-only feed (no reply, no call); avatar shows ℹ️
+//   claude → chat allowed, but not callable; avatar shows 🤖
+//   person → everything as usual
+function contactType(idHex) {
+  return peerBook[idHex]?.type || 'person'
+}
+
 function renderContacts() {
   const ul = $('contacts')
   ul.innerHTML = ''
   const entries = Object.entries(peerBook).map(([id, p]) => ({
     id, label: p.label || '', online: !!p.online,
     unread: unread[id] || 0, missed: missedCalls[id] || 0,
+    type: p.type || 'person',
   }))
   // Sort into four groups, alphabetical within each. Online always beats
   // offline at every unread level, so live contacts never sink below stale
@@ -296,8 +306,14 @@ function renderContacts() {
     const missedBadge = c.missed > 0
       ? `<div class="missed-badge">📞 ${c.missed > 99 ? '99+' : c.missed}</div>`
       : ''
+    // Typed contacts render an icon instead of initials and get a distinct
+    // avatar tint (info=ℹ️, claude=🤖); persons keep the orange initials.
+    let avatarClass = c.online ? '' : 'off'
+    let avatarContent = escapeHtml(contactInitials(c.label, c.id))
+    if (c.type === 'info')   { avatarClass += ' avatar-info';   avatarContent = 'ℹ️' }
+    if (c.type === 'claude') { avatarClass += ' avatar-claude'; avatarContent = '🤖' }
     li.innerHTML = `
-      <div class="avatar ${c.online ? '' : 'off'}">${escapeHtml(contactInitials(c.label, c.id))}</div>
+      <div class="avatar ${avatarClass}">${avatarContent}</div>
       <div class="name">${escapeHtml(c.label || t('unnamed'))}</div>
       <div class="id">${c.id.slice(0, 8)}</div>
       ${missedBadge}
@@ -310,9 +326,11 @@ function renderContacts() {
       if (Date.now() - lastContactMenuTs < 600) return
       openCallView(c.id)
     }
-    // Tapping the orange avatar circle starts a CALL directly (not the chat).
+    // Tapping the orange avatar circle starts a CALL directly (not the chat) —
+    // but only for callable person contacts. info/claude aren't callable, so
+    // their avatar just opens the chat (falls through to the <li> onclick).
     const avatar = li.querySelector('.avatar')
-    if (avatar) {
+    if (avatar && c.type === 'person') {
       avatar.title = t('call')
       avatar.style.cursor = 'pointer'
       avatar.onclick = (e) => {
@@ -617,7 +635,9 @@ async function openCallView(idHex) {
   refreshCallHeader()
   // Opening a chat must NOT disturb an in-progress call window (it lives on top,
   // independently). Only reflect whether the "📞" start button should show.
+  // applyChatTypeGating() may further hide it for non-callable types.
   $('call-btn').hidden = callActive
+  applyChatTypeGating(idHex)
   // Show the screen BEFORE filling the chat: a hidden container has no
   // layout, so scrollHeight reads 0 and the scroll-to-bottom is a no-op.
   showScreen('call')
@@ -718,6 +738,26 @@ function refreshCallHeader() {
   if (!p) return
   $('call-peer-name').textContent = p.label || currentPeerId.slice(0, 8)
   $('call-peer-online').className = 'dot ' + (p.online ? 'dot-on' : 'dot-off')
+}
+
+// Show/hide the composer and call button for the open chat according to the
+// peer's type. Re-run on every chat open so switching contacts restores the
+// right state (e.g. opening a person after an info brings the composer back).
+//   info   → read-only: no composer, no call button
+//   claude → chat allowed (composer shown), but not callable (no call button)
+//   person → composer + call button as usual
+function applyChatTypeGating(idHex) {
+  const type = contactType(idHex)
+  const composer = document.querySelector('.chat-input')
+  const editBanner = $('edit-banner')
+  const readOnly = (type === 'info')
+  const callable = (type === 'person')
+  if (composer) composer.hidden = readOnly
+  // A leftover edit banner makes no sense in a read-only feed.
+  if (readOnly && editBanner) editBanner.hidden = true
+  // Non-callable types never show the start-call button (callActive already
+  // hides it during an in-progress call).
+  if (!callable) $('call-btn').hidden = true
 }
 
 // (defined below as async — older sync stub no longer used)
