@@ -853,8 +853,11 @@ function startCallUI() {
 function resetCallButtons(state) {
   callActive = !CALL_TERMINAL.has(state)
   applyCallWindow()
-  // Hide the in-topbar "📞" call button while a call is up.
-  $('call-btn').hidden = callActive
+  // Hide the in-topbar "📞" call button while a call is up. When the call ends
+  // and we'd otherwise re-show it, keep it hidden for non-callable open peers
+  // (info/claude) so it never reappears in a read-only / AI chat.
+  const callable = currentPeerId ? contactType(currentPeerId) === 'person' : true
+  $('call-btn').hidden = callActive || !callable
   $('cw-state').textContent = callStateLabel(state)
   // Keep the last known name if we've navigated away (currentPeerId cleared)
   // mid-call — don't blank the header on a later state change.
