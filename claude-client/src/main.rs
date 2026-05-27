@@ -21,7 +21,7 @@
 //!   wschat keygen   print fresh seeds + your "K0..." invite, then exit
 //!   wschat          run the bridge
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::env;
 use std::time::Duration;
 
@@ -287,7 +287,7 @@ async fn main() -> anyhow::Result<()> {
 
     // State persists across reconnects.
     let mut seq: u16 = 1;
-    let mut sent: HashMap<[u8; 16], OutMsg> = HashMap::new();
+    let mut sent: IndexMap<[u8; 16], OutMsg> = IndexMap::new();
     let mut watch_offset: u64 = watch
         .as_ref()
         .and_then(|p| std::fs::metadata(p).ok())
@@ -484,7 +484,7 @@ async fn send_text(
     server_x_pub: &[u8; 32],
     ws: &mut Ws,
     seq: &mut u16,
-    sent: &mut HashMap<[u8; 16], OutMsg>,
+    sent: &mut IndexMap<[u8; 16], OutMsg>,
     peer_online: bool,
 ) {
     // Re-introduce (with name) so an offline-then-online peer still gets our keys.
@@ -524,7 +524,7 @@ async fn flush_outbox(
     server_x_pub: &[u8; 32],
     ws: &mut Ws,
     seq: &mut u16,
-    sent: &mut HashMap<[u8; 16], OutMsg>,
+    sent: &mut IndexMap<[u8; 16], OutMsg>,
 ) {
     // Always re-introduce on peer-online (even if the outbox is empty): lets
     // the peer's app pick up late updates to our nick/type tag. The relay
@@ -561,7 +561,7 @@ async fn handle_incoming(
     server_ed_vk: &VerifyingKey,
     ws: &mut Ws,
     seq: &mut u16,
-    sent: &mut HashMap<[u8; 16], OutMsg>,
+    sent: &mut IndexMap<[u8; 16], OutMsg>,
     peer_online: &mut bool,
 ) {
     use std::io::Write;

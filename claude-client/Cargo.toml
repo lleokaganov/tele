@@ -23,6 +23,11 @@ futures-util = "0.3"
 
 anyhow = "1"
 
+# Ordered map for the outbox: preserves insertion order on iteration so
+# pending messages are flushed in the order they were sent. (HashMap's
+# iteration order is unspecified — caused out-of-order delivery on reconnect.)
+indexmap = "2"
+
 [profile.release]
 opt-level = "z"
 lto = true
