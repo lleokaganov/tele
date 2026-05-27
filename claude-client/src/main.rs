@@ -526,6 +526,15 @@ async fn flush_outbox(
     seq: &mut u16,
     sent: &mut HashMap<[u8; 16], OutMsg>,
 ) {
+    // Always re-introduce on peer-online (even if the outbox is empty): lets
+    // the peer's app pick up late updates to our nick/type tag. The relay
+    // drops INTRODUCE silently when the target is offline, so an introduce
+    // sent at our (re)connect only "sticks" if the peer happened to be online
+    // at that moment. Sending it here closes the gap for the common case of
+    // peers that come online after us and to whom we have nothing to flush.
+    let _ = ws.send(Message::Binary(build_introduce(me, peer, nick, k_c2s, server_x_pub, *seq))).await;
+    *seq = seq.wrapping_add(1);
+
     let pending: Vec<([u8; 16], String)> = sent
         .iter()
         .filter(|(_, m)| !m.delivered)
@@ -535,8 +544,6 @@ async fn flush_outbox(
         return;
     }
     eprintln!("[wschat] flushing {} pending message(s)", pending.len());
-    let _ = ws.send(Message::Binary(build_introduce(me, peer, nick, k_c2s, server_x_pub, *seq))).await;
-    *seq = seq.wrapping_add(1);
     for (uuid, text) in pending {
         let frame = build_text_frame(me, peer, k_c2s, &uuid, &text);
         let _ = ws.send(Message::Binary(frame)).await;
