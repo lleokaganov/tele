@@ -288,9 +288,12 @@ async fn main() -> anyhow::Result<()> {
     let shared_with_server = x25519(me.x_priv, server_x_pub);
     let (k_c2s, k_s2c) = derive_session(&shared_with_server);
 
+    let files_dir = env::var("WSCHAT_FILES_DIR").ok();
+
     // State persists across reconnects.
     let mut seq: u16 = 1;
     let mut sent: IndexMap<[u8; 16], OutMsg> = IndexMap::new();
+    let mut in_files: IndexMap<[u8; 16], InFile> = IndexMap::new();
     let mut watch_offset: u64 = watch
         .as_ref()
         .and_then(|p| std::fs::metadata(p).ok())
@@ -364,7 +367,7 @@ async fn main() -> anyhow::Result<()> {
                     if matches!(msg, Some(Ok(_))) { last_rx = std::time::Instant::now(); }
                     match msg {
                         Some(Ok(Message::Binary(b))) => {
-                            handle_incoming(&b, &me, &peer, &nick, &k_s2c, &k_c2s, &server_x_pub, &server_ed_vk, &mut ws, &mut seq, &mut sent, &mut peer_online).await;
+                            handle_incoming(&b, &me, &peer, &nick, &k_s2c, &k_c2s, &server_x_pub, &server_ed_vk, &mut ws, &mut seq, &mut sent, &mut peer_online, &mut in_files, &files_dir).await;
                         }
                         Some(Ok(Message::Text(t))) => {
                             // Server's plain-text keepalive; reply "pong". Any received
@@ -383,7 +386,11 @@ async fn main() -> anyhow::Result<()> {
                 line = async { stdin_lines.as_mut().unwrap().next_line().await }, if stdin_lines.is_some() => {
                     match line {
                         Ok(Some(text)) if !text.trim().is_empty() => {
-                            send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, peer_online).await;
+                            if let Some(path) = parse_file_marker(&text) {
+                                send_file(path, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, peer_online).await;
+                            } else {
+                                send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, peer_online).await;
+                            }
                         }
                         Ok(Some(_)) => {}
                         _ => { stdin_lines = None; }
@@ -393,7 +400,11 @@ async fn main() -> anyhow::Result<()> {
                     if let Some(path) = watch.as_ref() {
                         for text in read_new_lines(path, &mut watch_offset) {
                             if !text.trim().is_empty() {
-                                send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, peer_online).await;
+                                if let Some(fpath) = parse_file_marker(&text) {
+                                    send_file(fpath, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, peer_online).await;
+                                } else {
+                                    send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, peer_online).await;
+                                }
                             }
                         }
                     }
@@ -566,6 +577,8 @@ async fn handle_incoming(
     seq: &mut u16,
     sent: &mut IndexMap<[u8; 16], OutMsg>,
     peer_online: &mut bool,
+    in_files: &mut IndexMap<[u8; 16], InFile>,
+    files_dir: &Option<String>,
 ) {
     use std::io::Write;
     if frame.len() < 8 + 24 + 16 + 64 {
@@ -628,6 +641,64 @@ async fn handle_incoming(
         let p = sent.get(&id).map(|m| m.text.clone()).unwrap_or_default();
         println!("  \u{2713}\u{2713} read: {p}");
         let _ = std::io::stdout().flush();
+    } else if cmd == CMD_FILE_OFFER {
+        // body = UTF-8 JSON {"id","name","mime","size",...}
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) {
+            let id_str = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+            if let Some(fid) = uuid_bytes(id_str) {
+                let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("file").to_string();
+                let mime = v.get("mime").and_then(|x| x.as_str()).unwrap_or("application/octet-stream").to_string();
+                let size = v.get("size").and_then(|x| x.as_u64()).unwrap_or(0);
+                eprintln!("[wschat] incoming file offer: {name}");
+                in_files.insert(fid, InFile { name, mime, size, chunks: std::collections::BTreeMap::new() });
+            }
+        }
+    } else if cmd == CMD_FILE_CHUNK && body.len() >= 20 {
+        let fid: [u8; 16] = body[..16].try_into().unwrap();
+        let idx = u32::from_le_bytes(body[16..20].try_into().unwrap());
+        let data = &body[20..];
+        if let Some(f) = in_files.get_mut(&fid) {
+            f.chunks.insert(idx, data.to_vec());
+        }
+    } else if cmd == CMD_FILE_END && body.len() >= 32 {
+        let fid: [u8; 16] = body[..16].try_into().unwrap();
+        let mid: [u8; 16] = body[16..32].try_into().unwrap();
+        if let Some(f) = in_files.shift_remove(&fid) {
+            // Reassemble chunks in ascending index order.
+            let mut data = Vec::with_capacity(f.size as usize);
+            for chunk in f.chunks.values() {
+                data.extend_from_slice(chunk);
+            }
+            // Pick save dir: WSCHAT_FILES_DIR/in if set, else /tmp.
+            let dir = match files_dir {
+                Some(d) => std::path::Path::new(d).join("in"),
+                None => std::path::PathBuf::from("/tmp"),
+            };
+            let _ = std::fs::create_dir_all(&dir);
+            // Sanitize name: basename only, replace stray '/', fall back to "file".
+            let base = f.name.rsplit('/').next().unwrap_or("").replace('/', "_");
+            let base = if base.trim().is_empty() { "file".to_string() } else { base };
+            let fid8 = &hex::encode(fid)[..8];
+            let fname = format!("{fid8}-{base}");
+            let saved = dir.join(&fname);
+            match std::fs::write(&saved, &data) {
+                Ok(()) => {
+                    let saved_path = saved.display();
+                    println!("{}: [file] {} ({}, {} bytes)", peer.nick, saved_path, f.mime, data.len());
+                    let _ = std::io::stdout().flush();
+                }
+                Err(e) => {
+                    eprintln!("[wschat] failed to save incoming file {}: {e}", saved.display());
+                }
+            }
+            // Acknowledge delivery, then read, keyed on the message id.
+            for ack_cmd in [CMD_DELIVERY_ACK, CMD_READ_ACK] {
+                let ack = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
+                    &pack_inner(*seq, ack_cmd, &mid));
+                *seq = seq.wrapping_add(1);
+                let _ = ws.send(Message::Binary(ack)).await;
+            }
+        }
     }
 }
 
@@ -648,6 +719,162 @@ fn decode_server_frame(
         return None;
     }
     verify_and_decrypt(&frame[8..], my_x_priv, server_x_pub, server_ed)
+}
+
+// ============================== files ==============================
+
+/// Canonical UUID string (8-4-4-4-12 hex with dashes) from 16 raw bytes.
+fn uuid_str(b: &[u8; 16]) -> String {
+    let h = hex::encode(b);
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
+}
+
+/// Parse a canonical/loose UUID string back to 16 raw bytes (strip '-', hex).
+fn uuid_bytes(s: &str) -> Option<[u8; 16]> {
+    let stripped: String = s.chars().filter(|c| *c != '-').collect();
+    let raw = hex::decode(stripped).ok()?;
+    raw.try_into().ok()
+}
+
+/// Guess a MIME type from a file name's extension.
+fn mime_from_name(name: &str) -> &'static str {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Minimal JSON string escaper for the offer's `name` field.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Recognize an outgoing line as a file send marker: `[[img:PATH]]` or
+/// `[[file:PATH]]`. Returns the inner path (trimmed) if it matches.
+fn parse_file_marker(line: &str) -> Option<&str> {
+    let t = line.trim();
+    let inner = t.strip_prefix("[[img:").or_else(|| t.strip_prefix("[[file:"))?;
+    let inner = inner.strip_suffix("]]")?;
+    Some(inner.trim())
+}
+
+/// An incoming file being reassembled from chunks (keyed by 16-byte file id).
+struct InFile {
+    name: String,
+    mime: String,
+    size: u64,
+    chunks: std::collections::BTreeMap<u32, Vec<u8>>,
+}
+
+/// Send a local file to the peer as OFFER + CHUNKs + END (mirrors send_text).
+async fn send_file(
+    path: &str,
+    me: &Identity,
+    peer: &Peer,
+    nick: &str,
+    k_c2s: &[u8; 32],
+    server_x_pub: &[u8; 32],
+    ws: &mut Ws,
+    seq: &mut u16,
+    peer_online: bool,
+) {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[wschat] cannot read file {path}: {e}");
+            return;
+        }
+    };
+    let name = path.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(path).to_string();
+    let mime = mime_from_name(&name);
+
+    let mut fid = [0u8; 16];
+    let mut mid = [0u8; 16];
+    OsRng.fill_bytes(&mut fid);
+    OsRng.fill_bytes(&mut mid);
+    let fid_str = uuid_str(&fid);
+
+    // Re-introduce (with name) — parity with send_text.
+    let _ = ws.send(Message::Binary(build_introduce(me, peer, nick, k_c2s, server_x_pub, *seq))).await;
+    *seq = seq.wrapping_add(1);
+
+    // OFFER: UTF-8 JSON (thumb_b64 omitted).
+    let json = format!(
+        "{{\"id\":\"{}\",\"name\":\"{}\",\"mime\":\"{}\",\"size\":{}}}",
+        fid_str,
+        json_escape(&name),
+        mime,
+        bytes.len()
+    );
+    let offer = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
+        &pack_inner(0, CMD_FILE_OFFER, json.as_bytes()));
+    if ws.send(Message::Binary(offer)).await.is_err() {
+        eprintln!("[wschat] file offer send failed for {name}");
+        return;
+    }
+
+    // CHUNKS: body = [file_id:16][chunk_idx:u32 LE][chunk bytes].
+    let chunk_size = 32 * 1024;
+    let mut n_chunks = 0u32;
+    for (idx, slice) in bytes.chunks(chunk_size).enumerate() {
+        let mut cbody = Vec::with_capacity(16 + 4 + slice.len());
+        cbody.extend_from_slice(&fid);
+        cbody.extend_from_slice(&(idx as u32).to_le_bytes());
+        cbody.extend_from_slice(slice);
+        let frame = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
+            &pack_inner(0, CMD_FILE_CHUNK, &cbody));
+        if ws.send(Message::Binary(frame)).await.is_err() {
+            eprintln!("[wschat] file chunk {idx} send failed for {name}");
+            return;
+        }
+        n_chunks += 1;
+    }
+
+    // END: body = [file_id:16][msg_id:16].
+    let mut ebody = Vec::with_capacity(32);
+    ebody.extend_from_slice(&fid);
+    ebody.extend_from_slice(&mid);
+    let end = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
+        &pack_inner(0, CMD_FILE_END, &ebody));
+    if ws.send(Message::Binary(end)).await.is_err() {
+        eprintln!("[wschat] file end send failed for {name}");
+        return;
+    }
+
+    // Wake the peer if we believe they're offline (parity with send_text).
+    if !peer_online {
+        let mut wbody = peer.id.to_vec();
+        wbody.push(0u8);
+        let wframe = build_server_bound(me, server_x_pub, k_c2s, &pack_inner(*seq, CMD_WAKE, &wbody));
+        let _ = ws.send(Message::Binary(wframe)).await;
+        *seq = seq.wrapping_add(1);
+    }
+
+    eprintln!("[wschat] sent {name} ({} bytes, {} chunks)", bytes.len(), n_chunks);
 }
 
 /// Read lines appended to `path` since byte `offset`; advance `offset`.
