@@ -211,6 +211,16 @@ struct OutMsg {
     delivered: bool,
 }
 
+/// An outgoing file in the local outbox. Kept until the peer's delivery-ack
+/// arrives; re-sent (re-read from disk) when the peer comes online. Mirrors
+/// OutMsg but for files: we store the path (re-read on resend) plus the file
+/// id, so a resend reuses the SAME fid/mid and the receiver dedups/finalises.
+struct FileOut {
+    path: String,
+    fid: [u8; 16],
+    delivered: bool,
+}
+
 fn decode_qr(qr: &str) -> anyhow::Result<Peer> {
     let body = qr.strip_prefix(QR_PREFIX).ok_or_else(|| anyhow::anyhow!("bad QR prefix"))?;
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(body)?;
@@ -293,6 +303,7 @@ async fn main() -> anyhow::Result<()> {
     // State persists across reconnects.
     let mut seq: u16 = 1;
     let mut sent: IndexMap<[u8; 16], OutMsg> = IndexMap::new();
+    let mut file_sent: IndexMap<[u8; 16], FileOut> = IndexMap::new();
     let mut in_files: IndexMap<[u8; 16], InFile> = IndexMap::new();
     let mut watch_offset: u64 = watch
         .as_ref()
@@ -347,7 +358,7 @@ async fn main() -> anyhow::Result<()> {
         seq = seq.wrapping_add(1);
 
         // Peer may already be online — try to flush any pending outbox now.
-        flush_outbox(&me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent).await;
+        flush_outbox(&me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, &mut file_sent).await;
 
         let mut poll = tokio::time::interval(Duration::from_millis(500));
         // Liveness: the server emits a frame (binary, WS-ping, or plain-text "ping")
@@ -367,7 +378,7 @@ async fn main() -> anyhow::Result<()> {
                     if matches!(msg, Some(Ok(_))) { last_rx = std::time::Instant::now(); }
                     match msg {
                         Some(Ok(Message::Binary(b))) => {
-                            handle_incoming(&b, &me, &peer, &nick, &k_s2c, &k_c2s, &server_x_pub, &server_ed_vk, &mut ws, &mut seq, &mut sent, &mut peer_online, &mut in_files, &files_dir).await;
+                            handle_incoming(&b, &me, &peer, &nick, &k_s2c, &k_c2s, &server_x_pub, &server_ed_vk, &mut ws, &mut seq, &mut sent, &mut file_sent, &mut peer_online, &mut in_files, &files_dir).await;
                         }
                         Some(Ok(Message::Text(t))) => {
                             // Server's plain-text keepalive; reply "pong". Any received
@@ -387,7 +398,7 @@ async fn main() -> anyhow::Result<()> {
                     match line {
                         Ok(Some(text)) if !text.trim().is_empty() => {
                             if let Some(path) = parse_file_marker(&text) {
-                                send_file(path, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, peer_online).await;
+                                send_file(path, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut file_sent, peer_online).await;
                             } else {
                                 send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, peer_online).await;
                             }
@@ -401,7 +412,7 @@ async fn main() -> anyhow::Result<()> {
                         for text in read_new_lines(path, &mut watch_offset) {
                             if !text.trim().is_empty() {
                                 if let Some(fpath) = parse_file_marker(&text) {
-                                    send_file(fpath, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, peer_online).await;
+                                    send_file(fpath, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut file_sent, peer_online).await;
                                 } else {
                                     send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, peer_online).await;
                                 }
@@ -539,6 +550,7 @@ async fn flush_outbox(
     ws: &mut Ws,
     seq: &mut u16,
     sent: &mut IndexMap<[u8; 16], OutMsg>,
+    file_sent: &mut IndexMap<[u8; 16], FileOut>,
 ) {
     // Always re-introduce on peer-online (even if the outbox is empty): lets
     // the peer's app pick up late updates to our nick/type tag. The relay
@@ -554,13 +566,37 @@ async fn flush_outbox(
         .filter(|(_, m)| !m.delivered)
         .map(|(id, m)| (*id, m.text.clone()))
         .collect();
-    if pending.is_empty() {
-        return;
+    if !pending.is_empty() {
+        eprintln!("[wschat] flushing {} pending message(s)", pending.len());
+        for (uuid, text) in pending {
+            let frame = build_text_frame(me, peer, k_c2s, &uuid, &text);
+            let _ = ws.send(Message::Binary(frame)).await;
+        }
     }
-    eprintln!("[wschat] flushing {} pending message(s)", pending.len());
-    for (uuid, text) in pending {
-        let frame = build_text_frame(me, peer, k_c2s, &uuid, &text);
-        let _ = ws.send(Message::Binary(frame)).await;
+
+    // Re-send undelivered files. Each is re-read from disk and replayed with
+    // the SAME fid/mid so the receiver dedups/finalises correctly. Entries
+    // whose backing file has gone are dropped (can't resend a vanished file).
+    let file_pending: Vec<([u8; 16], FileOut)> = file_sent
+        .iter()
+        .filter(|(_, f)| !f.delivered)
+        .map(|(mid, f)| (*mid, FileOut { path: f.path.clone(), fid: f.fid, delivered: f.delivered }))
+        .collect();
+    if !file_pending.is_empty() {
+        eprintln!("[wschat] flushing {} pending file(s)", file_pending.len());
+        for (mid, f) in file_pending {
+            let bytes = match std::fs::read(&f.path) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("[wschat] cannot re-read file {} for resend: {e}; dropping from outbox", f.path);
+                    file_sent.shift_remove(&mid);
+                    continue;
+                }
+            };
+            let name = f.path.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(&f.path).to_string();
+            let mime = mime_from_name(&name);
+            send_file_frames(&bytes, &name, mime, &f.fid, &mid, me, peer, k_c2s, ws).await;
+        }
     }
 }
 
@@ -576,6 +612,7 @@ async fn handle_incoming(
     ws: &mut Ws,
     seq: &mut u16,
     sent: &mut IndexMap<[u8; 16], OutMsg>,
+    file_sent: &mut IndexMap<[u8; 16], FileOut>,
     peer_online: &mut bool,
     in_files: &mut IndexMap<[u8; 16], InFile>,
     files_dir: &Option<String>,
@@ -595,7 +632,7 @@ async fn handle_incoming(
             if inner.len() >= 3 && inner[2] == CMD_PEER_ONLINE {
                 *peer_online = true;
                 eprintln!("[wschat] peer online — flushing outbox");
-                flush_outbox(me, peer, nick, k_c2s, server_x_pub, ws, seq, sent).await;
+                flush_outbox(me, peer, nick, k_c2s, server_x_pub, ws, seq, sent, file_sent).await;
             } else if inner.len() >= 3 && inner[2] == CMD_PEER_OFFLINE {
                 *peer_online = false;
                 eprintln!("[wschat] peer offline");
@@ -633,13 +670,25 @@ async fn handle_incoming(
     } else if cmd == CMD_DELIVERY_ACK && body.len() >= 16 {
         let id: [u8; 16] = body[..16].try_into().unwrap();
         if let Some(m) = sent.get_mut(&id) { m.delivered = true; }
+        // The ack id is the 16-byte msg id; for files it keys file_sent by mid.
+        if let Some(f) = file_sent.get_mut(&id) {
+            f.delivered = true;
+            println!("  \u{2713} delivered (file)");
+        }
         let p = sent.get(&id).map(|m| m.text.clone()).unwrap_or_default();
-        println!("  \u{2713} delivered: {p}");
+        if !p.is_empty() {
+            println!("  \u{2713} delivered: {p}");
+        }
         let _ = std::io::stdout().flush();
     } else if cmd == CMD_READ_ACK && body.len() >= 16 {
         let id: [u8; 16] = body[..16].try_into().unwrap();
+        if file_sent.contains_key(&id) {
+            println!("  \u{2713}\u{2713} read (file)");
+        }
         let p = sent.get(&id).map(|m| m.text.clone()).unwrap_or_default();
-        println!("  \u{2713}\u{2713} read: {p}");
+        if !p.is_empty() {
+            println!("  \u{2713}\u{2713} read: {p}");
+        }
         let _ = std::io::stdout().flush();
     } else if cmd == CMD_FILE_OFFER {
         // body = UTF-8 JSON {"id","name","mime","size",...}
@@ -790,7 +839,74 @@ struct InFile {
     chunks: std::collections::BTreeMap<u32, Vec<u8>>,
 }
 
-/// Send a local file to the peer as OFFER + CHUNKs + END (mirrors send_text).
+/// Send the wire frames for one file: OFFER + CHUNKs + END. Reusable for both
+/// the initial send and outbox resends — callers pass the SAME fid/mid on
+/// resend so the receiver dedups/finalises correctly. The JSON/chunk/end
+/// formats are byte-identical to the original send_file. The INTRODUCE that
+/// accompanied the original send is emitted by the caller (send_file /
+/// flush_outbox), which both re-introduce before invoking this.
+async fn send_file_frames(
+    bytes: &[u8],
+    name: &str,
+    mime: &str,
+    fid: &[u8; 16],
+    mid: &[u8; 16],
+    me: &Identity,
+    peer: &Peer,
+    k_c2s: &[u8; 32],
+    ws: &mut Ws,
+) {
+    let fid_str = uuid_str(fid);
+
+    // OFFER: UTF-8 JSON (thumb_b64 omitted).
+    let json = format!(
+        "{{\"id\":\"{}\",\"name\":\"{}\",\"mime\":\"{}\",\"size\":{}}}",
+        fid_str,
+        json_escape(name),
+        mime,
+        bytes.len()
+    );
+    let offer = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
+        &pack_inner(0, CMD_FILE_OFFER, json.as_bytes()));
+    if ws.send(Message::Binary(offer)).await.is_err() {
+        eprintln!("[wschat] file offer send failed for {name}");
+        return;
+    }
+
+    // CHUNKS: body = [file_id:16][chunk_idx:u32 LE][chunk bytes].
+    let chunk_size = 32 * 1024;
+    let mut n_chunks = 0u32;
+    for (idx, slice) in bytes.chunks(chunk_size).enumerate() {
+        let mut cbody = Vec::with_capacity(16 + 4 + slice.len());
+        cbody.extend_from_slice(fid);
+        cbody.extend_from_slice(&(idx as u32).to_le_bytes());
+        cbody.extend_from_slice(slice);
+        let frame = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
+            &pack_inner(0, CMD_FILE_CHUNK, &cbody));
+        if ws.send(Message::Binary(frame)).await.is_err() {
+            eprintln!("[wschat] file chunk {idx} send failed for {name}");
+            return;
+        }
+        n_chunks += 1;
+    }
+
+    // END: body = [file_id:16][msg_id:16].
+    let mut ebody = Vec::with_capacity(32);
+    ebody.extend_from_slice(fid);
+    ebody.extend_from_slice(mid);
+    let end = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
+        &pack_inner(0, CMD_FILE_END, &ebody));
+    if ws.send(Message::Binary(end)).await.is_err() {
+        eprintln!("[wschat] file end send failed for {name}");
+        return;
+    }
+
+    eprintln!("[wschat] sent {name} ({} bytes, {} chunks)", bytes.len(), n_chunks);
+}
+
+/// Send a local file to the peer as OFFER + CHUNKs + END (mirrors send_text),
+/// then record it in the file outbox so it can be re-sent if the peer was
+/// offline (no delivery-ack returns until they come back).
 async fn send_file(
     path: &str,
     me: &Identity,
@@ -800,6 +916,7 @@ async fn send_file(
     server_x_pub: &[u8; 32],
     ws: &mut Ws,
     seq: &mut u16,
+    file_sent: &mut IndexMap<[u8; 16], FileOut>,
     peer_online: bool,
 ) {
     let bytes = match std::fs::read(path) {
@@ -816,54 +933,17 @@ async fn send_file(
     let mut mid = [0u8; 16];
     OsRng.fill_bytes(&mut fid);
     OsRng.fill_bytes(&mut mid);
-    let fid_str = uuid_str(&fid);
 
     // Re-introduce (with name) — parity with send_text.
     let _ = ws.send(Message::Binary(build_introduce(me, peer, nick, k_c2s, server_x_pub, *seq))).await;
     *seq = seq.wrapping_add(1);
 
-    // OFFER: UTF-8 JSON (thumb_b64 omitted).
-    let json = format!(
-        "{{\"id\":\"{}\",\"name\":\"{}\",\"mime\":\"{}\",\"size\":{}}}",
-        fid_str,
-        json_escape(&name),
-        mime,
-        bytes.len()
-    );
-    let offer = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
-        &pack_inner(0, CMD_FILE_OFFER, json.as_bytes()));
-    if ws.send(Message::Binary(offer)).await.is_err() {
-        eprintln!("[wschat] file offer send failed for {name}");
-        return;
-    }
+    send_file_frames(&bytes, &name, mime, &fid, &mid, me, peer, k_c2s, ws).await;
 
-    // CHUNKS: body = [file_id:16][chunk_idx:u32 LE][chunk bytes].
-    let chunk_size = 32 * 1024;
-    let mut n_chunks = 0u32;
-    for (idx, slice) in bytes.chunks(chunk_size).enumerate() {
-        let mut cbody = Vec::with_capacity(16 + 4 + slice.len());
-        cbody.extend_from_slice(&fid);
-        cbody.extend_from_slice(&(idx as u32).to_le_bytes());
-        cbody.extend_from_slice(slice);
-        let frame = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
-            &pack_inner(0, CMD_FILE_CHUNK, &cbody));
-        if ws.send(Message::Binary(frame)).await.is_err() {
-            eprintln!("[wschat] file chunk {idx} send failed for {name}");
-            return;
-        }
-        n_chunks += 1;
-    }
-
-    // END: body = [file_id:16][msg_id:16].
-    let mut ebody = Vec::with_capacity(32);
-    ebody.extend_from_slice(&fid);
-    ebody.extend_from_slice(&mid);
-    let end = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
-        &pack_inner(0, CMD_FILE_END, &ebody));
-    if ws.send(Message::Binary(end)).await.is_err() {
-        eprintln!("[wschat] file end send failed for {name}");
-        return;
-    }
+    // Record in the file outbox BEFORE returning — if the peer is offline the
+    // send still "succeeds" into the socket but no delivery-ack returns, so it
+    // stays pending and gets re-sent (re-read from disk) on PEER_ONLINE.
+    file_sent.insert(mid, FileOut { path: path.to_string(), fid, delivered: false });
 
     // Wake the peer if we believe they're offline (parity with send_text).
     if !peer_online {
@@ -873,8 +953,6 @@ async fn send_file(
         let _ = ws.send(Message::Binary(wframe)).await;
         *seq = seq.wrapping_add(1);
     }
-
-    eprintln!("[wschat] sent {name} ({} bytes, {} chunks)", bytes.len(), n_chunks);
 }
 
 /// Read lines appended to `path` since byte `offset`; advance `offset`.
