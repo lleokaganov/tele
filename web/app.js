@@ -2807,6 +2807,35 @@ function blobFromB64(b64, mime) {
   return new Blob([u8], { type: mime })
 }
 
+/** Replay a previously-sent file from local storage: OFFER + CHUNKS + END.
+ *  Used by flushOutboxFor when the recipient comes back online (or is woken
+ *  via push) after the original send went into the void — the relay does not
+ *  hold peer frames for offline recipients, so the SENDER has to repeat. */
+async function replayFileSend(peerId, msg) {
+  const fileId = fileIdOf(msg.body)
+  if (!fileId) return false
+  const f = await Storage.getFile(fileId)
+  if (!f || !f.blob) return false   // blob purged or never stored — give up silently
+  let thumb_b64 = null
+  if (f.thumb_blob) {
+    try { thumb_b64 = await blobToBase64(f.thumb_blob) } catch {}
+  }
+  const meta = { id: fileId, name: f.name, mime: f.mime, size: f.size, thumb_b64 }
+  if (!client.sendFileOffer(peerId, meta)) return false
+  const buf = new Uint8Array(await f.blob.arrayBuffer())
+  const total = Math.ceil(buf.length / CHUNK_BYTES) || 1
+  for (let i = 0; i < total; i++) {
+    let guard = 0
+    while (client.ws && client.ws.bufferedAmount > 256 * 1024 && guard++ < 500) {
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    const slice = buf.subarray(i * CHUNK_BYTES, (i + 1) * CHUNK_BYTES)
+    if (!client.sendFileChunk(peerId, fileId, i, slice)) return false
+  }
+  if (!client.sendFileEnd(peerId, fileId, msg.id)) return false
+  return true
+}
+
 /** Drain everything pending for `peerId` over the live WS. */
 async function flushOutboxFor(peerIdHex) {
   const pending = await Storage.pendingFor(peerIdHex)
@@ -2815,15 +2844,15 @@ async function flushOutboxFor(peerIdHex) {
   // Re-introduce in case the peer just woke up without us.
   client.introduce(peerId, nickname || '')
   for (const m of pending) {
-    if (!isFileRef(m.body)) {
-      const ok = client.sendText(peerId, m.id, m.body)
-      if (ok) {
-        await Storage.markStatus(m.id, 'sent')
-        updateRowStatus(m.id, 'sent')
-      } else {
-        await Storage.bumpAttempt(m.id)
-        break  // socket down — stop, try again on next PEER_ONLINE
-      }
+    const ok = isFileRef(m.body)
+      ? await replayFileSend(peerId, m)
+      : client.sendText(peerId, m.id, m.body)
+    if (ok) {
+      await Storage.markStatus(m.id, 'sent')
+      updateRowStatus(m.id, 'sent')
+    } else {
+      await Storage.bumpAttempt(m.id)
+      break  // socket down — stop, try again on next PEER_ONLINE
     }
   }
 }
