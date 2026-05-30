@@ -1416,8 +1416,13 @@ const call = new CallManager(client, {
       } catch {}
     }
     const fileMeta = { id: meta.id, mime: meta.mime, name: meta.name, size: meta.size, thumb_blob }
+    // Always mirror meta into memory, even in persist mode. onFileEnd's IDB
+    // read can race ahead of saveFileMeta's IDB write — if it does, getFile
+    // returns undefined, onFileEnd silently exits without sendDeliveryAck,
+    // and the sender's bubble stays "sent" forever. Reading from memory in
+    // onFileEnd first makes it independent of IDB-write timing.
+    inboundMetaMem.set(meta.id, { ...fileMeta, blob: null })
     if (chatsPersistEnabled()) await Storage.saveFileMeta({ ...meta, thumb_blob })
-    else                       inboundMetaMem.set(meta.id, { ...fileMeta, blob: null })
   },
   onFileChunk: (peerId, fileId, idx, data) => {
     // Defensive: if the OFFER hasn't been processed yet (we're still awaiting
@@ -1430,7 +1435,11 @@ const call = new CallManager(client, {
     const arr = inboundChunks.get(fileId)
     if (!arr) return
     const persist = chatsPersistEnabled()
-    const meta = persist ? await Storage.getFile(fileId) : inboundMetaMem.get(fileId)
+    // Read meta from the synchronous memory mirror first; fall back to IDB
+    // only if memory is empty (e.g. a stray END with no prior OFFER in
+    // this session). This avoids racing OFFER's still-pending saveFileMeta.
+    let meta = inboundMetaMem.get(fileId)
+    if (!meta && persist) meta = await Storage.getFile(fileId)
     if (!meta) return
     const blob = new Blob(arr.filter(Boolean), { type: meta.mime })
     inboundChunks.delete(fileId)
@@ -1439,6 +1448,7 @@ const call = new CallManager(client, {
     if (persist) {
       await Storage.saveFileBlob(fileId, blob)
       isNew = await Storage.saveIncoming(idHex, msgId, `%${fileId}`, Date.now())
+      inboundMetaMem.delete(fileId)  // mirror no longer needed after persistence
     } else {
       // Ephemeral: keep the assembled blob in memory only, render from it.
       meta.blob = blob
