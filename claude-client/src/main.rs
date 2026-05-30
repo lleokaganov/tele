@@ -22,6 +22,7 @@
 //!   wschat          run the bridge
 
 use indexmap::IndexMap;
+use std::collections::{HashSet, VecDeque};
 use std::env;
 use std::time::Duration;
 
@@ -221,6 +222,190 @@ struct FileOut {
     delivered: bool,
 }
 
+// ============================ durable inbox journal ============================
+
+/// Durable, append-only journal of INCOMING messages plus a deferred read-ack
+/// queue. Each journal line is exactly:
+///   `<msgid_hex32>\t<unread|read>\t<kind>\t<nick>\t<payload>`
+/// where payload is the text (kind=text) or the saved file path (kind=file),
+/// escaped so it never contains a literal `\n`/`\t`/`\\`.
+///
+/// `unread_q` is the FIFO of msgids awaiting a `[[read]]` directive (oldest
+/// first). `seen` holds every msgid ever journaled, for dedup of sender
+/// re-deliveries. Only constructed when WSCHAT_INBOX is set.
+struct InboxJournal {
+    path: String,
+    unread_q: VecDeque<[u8; 16]>,
+    seen: HashSet<[u8; 16]>,
+}
+
+/// Escape a payload so it fits on one journal line (`\\`, `\n`, `\t`).
+fn journal_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Reverse of `journal_escape`.
+fn journal_unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('\\') => out.push('\\'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+impl InboxJournal {
+    fn new(path: String) -> Self {
+        Self { path, unread_q: VecDeque::new(), seen: HashSet::new() }
+    }
+
+    /// Append one journal entry (status starts `unread`).
+    fn append(&self, msgid: &[u8; 16], kind: &str, nick: &str, payload: &str) {
+        use std::io::Write;
+        let line = format!(
+            "{}\t{}\t{}\t{}\t{}\n",
+            hex::encode(msgid),
+            "unread",
+            kind,
+            journal_escape(nick),
+            journal_escape(payload),
+        );
+        match std::fs::OpenOptions::new().create(true).append(true).open(&self.path) {
+            Ok(mut f) => {
+                if let Err(e) = f.write_all(line.as_bytes()) {
+                    eprintln!("[wschat] inbox journal write failed: {e}");
+                }
+            }
+            Err(e) => eprintln!("[wschat] inbox journal open failed: {e}"),
+        }
+    }
+
+    /// Record an incoming msgid: dedup against `seen`, append + enqueue if new.
+    /// Returns true if this is a NEW message (caller should print it).
+    fn record(&mut self, msgid: &[u8; 16], kind: &str, nick: &str, payload: &str) -> bool {
+        if self.seen.contains(msgid) {
+            return false;
+        }
+        self.seen.insert(*msgid);
+        self.append(msgid, kind, nick, payload);
+        self.unread_q.push_back(*msgid);
+        true
+    }
+
+    /// Pop the oldest unread msgid (for a `[[read]]` directive). Marks its
+    /// journal line `read`. Returns the msgid to ack, or None if queue empty.
+    fn pop_oldest_for_read(&mut self) -> Option<[u8; 16]> {
+        let msgid = self.unread_q.pop_front()?;
+        self.mark_read(&msgid);
+        Some(msgid)
+    }
+
+    /// Rewrite the journal flipping the given id's status to `read`. The files
+    /// are small, so a full read-modify-write is fine.
+    fn mark_read(&self, msgid: &[u8; 16]) {
+        let want = hex::encode(msgid);
+        let content = match std::fs::read_to_string(&self.path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let mut out = String::with_capacity(content.len());
+        for line in content.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            let mut fields: Vec<&str> = line.splitn(5, '\t').collect();
+            if fields.len() == 5 && fields[0] == want {
+                fields[1] = "read";
+                out.push_str(&fields.join("\t"));
+            } else {
+                out.push_str(line);
+            }
+            out.push('\n');
+        }
+        if let Err(e) = std::fs::write(&self.path, out.as_bytes()) {
+            eprintln!("[wschat] inbox journal rewrite failed: {e}");
+        }
+    }
+
+    /// On startup: load any `unread` entries (in file order) into the queue and
+    /// `seen`, re-printing each so the responder reprocesses it. All journaled
+    /// ids (read or unread) go into `seen` for dedup.
+    fn recover(&mut self) {
+        let content = match std::fs::read_to_string(&self.path) {
+            Ok(c) => c,
+            Err(_) => return, // no journal yet — nothing to recover
+        };
+        let mut recovered = 0usize;
+        for line in content.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            let fields: Vec<&str> = line.splitn(5, '\t').collect();
+            if fields.len() != 5 {
+                continue;
+            }
+            let Some(msgid) = uuid_bytes(fields[0]) else { continue };
+            self.seen.insert(msgid);
+            let status = fields[1];
+            let kind = fields[2];
+            let nick = journal_unescape(fields[3]);
+            let payload = journal_unescape(fields[4]);
+            if status == "unread" {
+                self.unread_q.push_back(msgid);
+                if kind == "file" {
+                    println!("{}: [file] {} (recovered)", nick, payload);
+                } else {
+                    for sub in payload.split('\n') {
+                        println!("{}: {}", nick, sub);
+                    }
+                }
+                recovered += 1;
+            }
+        }
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        if recovered > 0 {
+            eprintln!("[wschat] recovered {recovered} unread message(s) from inbox journal");
+        }
+    }
+}
+
+/// Send a CMD_READ_ACK for the given msgid over the peer link, bumping seq.
+async fn send_read_ack(
+    msgid: &[u8; 16],
+    me: &Identity,
+    peer: &Peer,
+    k_c2s: &[u8; 32],
+    ws: &mut Ws,
+    seq: &mut u16,
+) {
+    let ack = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
+        &pack_inner(*seq, CMD_READ_ACK, msgid));
+    *seq = seq.wrapping_add(1);
+    let _ = ws.send(Message::Binary(ack)).await;
+}
+
 fn decode_qr(qr: &str) -> anyhow::Result<Peer> {
     let body = qr.strip_prefix(QR_PREFIX).ok_or_else(|| anyhow::anyhow!("bad QR prefix"))?;
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(body)?;
@@ -291,6 +476,7 @@ async fn main() -> anyhow::Result<()> {
     let server_ed_vk = VerifyingKey::from_bytes(&server_ed_pub).expect("server ed pub");
     let ws_url = env_or("WS_URL", DEFAULT_WS_URL);
     let watch = env::var("WSCHAT_WATCH").ok();
+    let inbox_path = env::var("WSCHAT_INBOX").ok();
 
     eprintln!("[wschat] me={} nick={} → peer={} ({})", hex::encode(me.id), nick, hex::encode(peer.id), peer.nick);
     eprintln!("[wschat] my invite: {}", make_qr(&me, &nick));
@@ -311,6 +497,16 @@ async fn main() -> anyhow::Result<()> {
         .map(|m| m.len())
         .unwrap_or(0); // only send lines appended after we start
     let mut stdin_lines = (watch.is_none()).then(|| BufReader::new(tokio::io::stdin()).lines());
+
+    // Durable inbox journal + deferred read-ack queue. Only when WSCHAT_INBOX
+    // is set; otherwise `inbox` is None and we keep the old auto-read behavior.
+    // Recover BEFORE the first connect so the responder reprocesses anything
+    // left unread by a prior run (lossless restart).
+    let mut inbox = inbox_path.map(|p| {
+        let mut j = InboxJournal::new(p);
+        j.recover();
+        j
+    });
 
     'reconnect: loop {
         // (Re)connect + handshake. On any failure, wait and retry — the
@@ -378,7 +574,7 @@ async fn main() -> anyhow::Result<()> {
                     if matches!(msg, Some(Ok(_))) { last_rx = std::time::Instant::now(); }
                     match msg {
                         Some(Ok(Message::Binary(b))) => {
-                            handle_incoming(&b, &me, &peer, &nick, &k_s2c, &k_c2s, &server_x_pub, &server_ed_vk, &mut ws, &mut seq, &mut sent, &mut file_sent, &mut peer_online, &mut in_files, &files_dir).await;
+                            handle_incoming(&b, &me, &peer, &nick, &k_s2c, &k_c2s, &server_x_pub, &server_ed_vk, &mut ws, &mut seq, &mut sent, &mut file_sent, &mut peer_online, &mut in_files, &files_dir, &mut inbox).await;
                         }
                         Some(Ok(Message::Text(t))) => {
                             // Server's plain-text keepalive; reply "pong". Any received
@@ -397,7 +593,14 @@ async fn main() -> anyhow::Result<()> {
                 line = async { stdin_lines.as_mut().unwrap().next_line().await }, if stdin_lines.is_some() => {
                     match line {
                         Ok(Some(text)) if !text.trim().is_empty() => {
-                            if let Some(path) = parse_file_marker(&text) {
+                            if text.trim() == "[[read]]" {
+                                // Control directive: ack the oldest unread message.
+                                if let Some(j) = inbox.as_mut() {
+                                    if let Some(msgid) = j.pop_oldest_for_read() {
+                                        send_read_ack(&msgid, &me, &peer, &k_c2s, &mut ws, &mut seq).await;
+                                    }
+                                }
+                            } else if let Some(path) = parse_file_marker(&text) {
                                 send_file(path, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut file_sent, peer_online).await;
                             } else {
                                 send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, peer_online).await;
@@ -411,7 +614,14 @@ async fn main() -> anyhow::Result<()> {
                     if let Some(path) = watch.as_ref() {
                         for text in read_new_lines(path, &mut watch_offset) {
                             if !text.trim().is_empty() {
-                                if let Some(fpath) = parse_file_marker(&text) {
+                                if text.trim() == "[[read]]" {
+                                    // Control directive: ack the oldest unread message.
+                                    if let Some(j) = inbox.as_mut() {
+                                        if let Some(msgid) = j.pop_oldest_for_read() {
+                                            send_read_ack(&msgid, &me, &peer, &k_c2s, &mut ws, &mut seq).await;
+                                        }
+                                    }
+                                } else if let Some(fpath) = parse_file_marker(&text) {
                                     send_file(fpath, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut file_sent, peer_online).await;
                                 } else {
                                     send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, peer_online).await;
@@ -616,6 +826,7 @@ async fn handle_incoming(
     peer_online: &mut bool,
     in_files: &mut IndexMap<[u8; 16], InFile>,
     files_dir: &Option<String>,
+    inbox: &mut Option<InboxJournal>,
 ) {
     use std::io::Write;
     if frame.len() < 8 + 24 + 16 + 64 {
@@ -652,18 +863,35 @@ async fn handle_incoming(
     let body = &inner[3..];
 
     if cmd == CMD_TEXT && body.len() >= 16 {
+        let msgid: [u8; 16] = body[..16].try_into().unwrap();
         let text = String::from_utf8_lossy(&body[16..]).to_string();
-        // Prefix EVERY line with the nick so multi-line messages aren't lost by
-        // line-based log filters (a bare continuation line would otherwise be
-        // dropped by `grep "<nick>:"`). One physical log line = one matchable line.
-        for line in text.split('\n') {
-            println!("{}: {}", peer.nick, line);
-        }
-        let _ = std::io::stdout().flush();
-        // Acknowledge delivery, then read (we display incoming immediately).
-        for ack_cmd in [CMD_DELIVERY_ACK, CMD_READ_ACK] {
+        // Always acknowledge delivery (even for a sender re-delivery).
+        let ack = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
+            &pack_inner(*seq, CMD_DELIVERY_ACK, &msgid));
+        *seq = seq.wrapping_add(1);
+        let _ = ws.send(Message::Binary(ack)).await;
+
+        if let Some(j) = inbox.as_mut() {
+            // Durable mode: dedup, journal, queue, print — DEFER read-ack until
+            // a `[[read]]` directive arrives.
+            if j.record(&msgid, "text", &peer.nick, &text) {
+                // Prefix EVERY line with the nick so multi-line messages aren't
+                // lost by line-based log filters. One physical line = one match.
+                for line in text.split('\n') {
+                    println!("{}: {}", peer.nick, line);
+                }
+                let _ = std::io::stdout().flush();
+            }
+            // Duplicate (sender re-delivery): delivery-ack already sent above;
+            // do not re-journal, re-print, or re-queue.
+        } else {
+            // Legacy mode (WSCHAT_INBOX unset): print + auto read-ack.
+            for line in text.split('\n') {
+                println!("{}: {}", peer.nick, line);
+            }
+            let _ = std::io::stdout().flush();
             let ack = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
-                &pack_inner(*seq, ack_cmd, &body[..16]));
+                &pack_inner(*seq, CMD_READ_ACK, &msgid));
             *seq = seq.wrapping_add(1);
             let _ = ws.send(Message::Binary(ack)).await;
         }
@@ -730,20 +958,33 @@ async fn handle_incoming(
             let fid8 = &hex::encode(fid)[..8];
             let fname = format!("{fid8}-{base}");
             let saved = dir.join(&fname);
+            let mut saved_ok: Option<String> = None;
             match std::fs::write(&saved, &data) {
                 Ok(()) => {
-                    let saved_path = saved.display();
+                    let saved_path = saved.display().to_string();
                     println!("{}: [file] {} ({}, {} bytes)", peer.nick, saved_path, f.mime, data.len());
                     let _ = std::io::stdout().flush();
+                    saved_ok = Some(saved_path);
                 }
                 Err(e) => {
                     eprintln!("[wschat] failed to save incoming file {}: {e}", saved.display());
                 }
             }
-            // Acknowledge delivery, then read, keyed on the message id.
-            for ack_cmd in [CMD_DELIVERY_ACK, CMD_READ_ACK] {
+            // Always acknowledge delivery, keyed on the message id.
+            let ack = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
+                &pack_inner(*seq, CMD_DELIVERY_ACK, &mid));
+            *seq = seq.wrapping_add(1);
+            let _ = ws.send(Message::Binary(ack)).await;
+
+            if let Some(j) = inbox.as_mut() {
+                // Durable mode: journal + queue (payload = saved path), DEFER
+                // read-ack until a `[[read]]` directive. Dedup via `seen`.
+                let payload = saved_ok.unwrap_or_default();
+                let _ = j.record(&mid, "file", &peer.nick, &payload);
+            } else {
+                // Legacy mode: auto read-ack immediately.
                 let ack = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
-                    &pack_inner(*seq, ack_cmd, &mid));
+                    &pack_inner(*seq, CMD_READ_ACK, &mid));
                 *seq = seq.wrapping_add(1);
                 let _ = ws.send(Message::Binary(ack)).await;
             }
