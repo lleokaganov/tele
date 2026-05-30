@@ -1398,6 +1398,12 @@ const call = new CallManager(client, {
   // ---- file transfer ----
   onFileOffer: async (peerId, meta) => {
     if (isBanned(u8hex(peerId))) return  // ignore file offers from blocked peers
+    // Race-safe: register the chunk-bucket synchronously, BEFORE any await.
+    // The first FILE_CHUNK can land in the same tick as the OFFER while we're
+    // still inside the IDB write below; without the bucket pre-created,
+    // onFileChunk's `if (!arr) return` silently drops chunk 0 and the
+    // reassembled file is missing its first CHUNK_BYTES bytes.
+    if (!inboundChunks.has(meta.id)) inboundChunks.set(meta.id, [])
     // Store metadata + thumbnail (if image) so we can render a preview
     // immediately. Blob comes together in FILE_END.
     let thumb_blob = null
@@ -1412,11 +1418,12 @@ const call = new CallManager(client, {
     const fileMeta = { id: meta.id, mime: meta.mime, name: meta.name, size: meta.size, thumb_blob }
     if (chatsPersistEnabled()) await Storage.saveFileMeta({ ...meta, thumb_blob })
     else                       inboundMetaMem.set(meta.id, { ...fileMeta, blob: null })
-    inboundChunks.set(meta.id, [])
   },
   onFileChunk: (peerId, fileId, idx, data) => {
-    const arr = inboundChunks.get(fileId)
-    if (!arr) return
+    // Defensive: if the OFFER hasn't been processed yet (we're still awaiting
+    // its IDB write), create the bucket on the fly so chunks aren't lost.
+    let arr = inboundChunks.get(fileId)
+    if (!arr) { arr = []; inboundChunks.set(fileId, arr) }
     arr[idx] = data
   },
   onFileEnd: async (peerId, fileId, msgId) => {
