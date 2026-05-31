@@ -178,6 +178,9 @@ function serverConfig() {
     edpub: localStorage.getItem('telefon_srv_edpub') || '',
   }
 }
+function sendOnEnterEnabled() {
+  return localStorage.getItem('telefon_send_on_enter') !== '0'
+}
 const _srv = serverConfig()
 const client = new WsClient({
   xSeed: seeds.xSeed, edSeed: seeds.edSeed,
@@ -2229,6 +2232,14 @@ function autoGrowInput() {
   ta.style.height = Math.min(ta.scrollHeight, 120) + 'px'
 }
 $('text-input').addEventListener('input', autoGrowInput)
+$('text-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    if (sendOnEnterEnabled()) {
+      e.preventDefault()
+      $('send-text').click()
+    }
+  }
+})
 
 // --- Floating "Copy" button for partial text selection ---------------------
 // WebView's native selection ActionMode (the system Copy bar) is unreliable, so
@@ -3526,6 +3537,14 @@ function openSettings() {
       </label>
     </div>
 
+    <div class="set-line">
+      <span class="set-label">${escapeHtml(t('set_send_on_enter'))}</span>
+      <label class="toggle">
+        <input id="set-send-on-enter" type="checkbox" data-nopersist />
+        <span class="track"></span>
+      </label>
+    </div>
+
     <div class="set-line" title="${escapeHtml(t('server_hint'))}">
       <span class="set-label">${escapeHtml(t('set_server'))}</span>
       <span id="set-url-display" class="inline-edit" tabindex="0" role="button" title="${escapeHtml(t('tap_to_edit'))}"></span>
@@ -3569,6 +3588,7 @@ function openSettings() {
   q('#set-lang').value   = langNow
   q('#set-fx').checked   = !!fxNow
   q('#set-persist').checked = chatsPersistEnabled()
+  q('#set-send-on-enter').checked = sendOnEnterEnabled()
 
   // ── My name (inline edit: shown as text; tap → input; commit on blur/Enter,
   //    no OK button — what you typed is your name) ──
@@ -3630,6 +3650,9 @@ function openSettings() {
   // written, chats live only in the open view and vanish on restart.
   q('#set-persist').onchange = (e) => {
     localStorage.setItem('telefon_persist_chats', e.target.checked ? '1' : '0')
+  }
+  q('#set-send-on-enter').onchange = (e) => {
+    localStorage.setItem('telefon_send_on_enter', e.target.checked ? '1' : '0')
   }
 
   // ── Server config (no buttons: URL is inline-edit, empty = default; any
