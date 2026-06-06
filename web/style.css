@@ -206,6 +206,49 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   border: 0; border-radius: 0; z-index: 1;
 }
 .call-window.no-remote .peer-video { display: none; }
+
+/* Group (mesh) call grid: 2–5 tiles laid out responsively over the stage. */
+.group-grid {
+  position: absolute; inset: 0;
+  display: grid; gap: 4px; padding: 4px;
+  grid-template-columns: repeat(auto-fit, minmax(45%, 1fr));
+  align-content: center;
+  background: #000;
+  z-index: 3;
+}
+.group-grid[hidden] { display: none; }
+.group-tile {
+  position: relative;
+  width: 100%; height: 100%;
+  background: #000; border-radius: 8px; overflow: hidden;
+}
+.group-video {
+  width: 100%; height: 100%;
+  object-fit: cover; background: #000; border-radius: 8px;
+}
+.group-cap {
+  position: absolute; left: 6px; bottom: 6px;
+  max-width: calc(100% - 12px);
+  padding: 1px 6px; border-radius: 6px;
+  background: rgba(0,0,0,.55); color: #fff;
+  font-size: .75rem; line-height: 1.3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* In group mode the 1:1 video elements are hidden and the grid takes over. */
+#call-window.group #peer-video,
+#call-window.group #my-video { display: none; }
+#call-window.group #group-grid { display: grid; }
+
+/* Add-participants checklist inside the picker dialog. */
+.add-participants-list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 50vh; overflow-y: auto;
+}
+.add-participant-row {
+  display: flex; align-items: center; gap: .5rem;
+  padding: .35rem .25rem; cursor: pointer;
+}
+.add-participant-row input { width: 1.1rem; height: 1.1rem; }
 /* Draggable PiP: touch-action:none stops the browser from scrolling the
  * page while the finger drags the mini-preview. */
 #my-video { touch-action: none; cursor: grab; }

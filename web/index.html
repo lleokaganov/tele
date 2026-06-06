@@ -189,6 +189,30 @@
     </div>
   </div>
 
+  <!-- ============================== DIALOG: group call invite ============================== -->
+  <div id="dialog-group-invite" class="dialog" hidden>
+    <div class="dialog-box">
+      <div class="dialog-title" data-i18n="group_invite">Group call invite</div>
+      <div id="group-invite-text" class="dialog-text">—</div>
+      <div class="dialog-buttons">
+        <button id="group-invite-reject" class="danger" data-i18n="decline">Decline</button>
+        <button id="group-invite-accept" class="primary" data-i18n="join">Join</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================== DIALOG: add participants ============================== -->
+  <div id="dialog-add-participants" class="dialog" hidden>
+    <div class="dialog-box">
+      <div class="dialog-title" data-i18n="add_participants">Add participants</div>
+      <div id="add-participants-list" class="dialog-text add-participants-list"></div>
+      <div class="dialog-buttons">
+        <button id="add-participants-cancel" class="danger" data-i18n="cancel">Cancel</button>
+        <button id="add-participants-confirm" class="primary" data-i18n="confirm">Confirm</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Settings now live in a lui window (see openSettings() in app.js).
        Only the hidden file input is kept — the contacts import flow reuses it. -->
   <input id="import-file" type="file" accept="application/json,.json,text/plain,.txt" hidden />
@@ -207,6 +231,8 @@
     <div class="video-stage">
       <video id="peer-video" class="peer-video" autoplay        playsinline></video>
       <video id="my-video"   class="my-video"   autoplay muted   playsinline></video>
+      <!-- Group (mesh) call tiles live here; hidden during 1:1 calls. -->
+      <div id="group-grid" class="group-grid" hidden></div>
       <div id="stats-overlay" class="stats-overlay" hidden></div>
       <button id="stats-toggle" class="stats-toggle" data-i18n-title="conn_stats" title="connection stats">ⓘ</button>
     </div>
@@ -225,6 +251,7 @@
         <span class="toggle"><input id="video-toggle" type="checkbox" checked /><span class="track"></span></span>
       </label>
       <button id="switch-cam" class="callbtn" data-i18n-title="camera" data-i18n-aria="camera" title="flip camera" aria-label="flip camera">🔄</button>
+      <button id="add-participant" class="callbtn" hidden data-i18n-title="add_to_call" data-i18n-aria="add_to_call" title="add to call" aria-label="add to call">➕</button>
       <button id="share-screen" class="callbtn" hidden data-i18n-title="share_screen" data-i18n-aria="share_screen" title="share screen" aria-label="share screen">🖥️</button>
       <button id="dev-pick" class="callbtn" data-i18n-title="call_settings" data-i18n-aria="call_settings" title="call settings" aria-label="call settings">⚙</button>
     </div>

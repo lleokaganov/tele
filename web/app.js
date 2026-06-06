@@ -2,6 +2,7 @@
 
 import { WsClient, CMD, ERR, u8hex }                             from './ws_client.js'
 import { CallManager }                                            from './webrtc.js'
+import { GroupCallManager, GROUP, MAX_MEMBERS }                   from './group_call.js'
 import { loadSeeds, saveSeeds, generateSeeds, wipeSeeds,
          loadPeers, savePeers,
          loadNickname, saveNickname, wipeNickname }               from './keystore.js'
@@ -864,6 +865,9 @@ function resetCallButtons(state) {
   // mid-call — don't blank the header on a later state change.
   const lbl = (peerBook[currentPeerId]?.label) || (currentPeerId ? currentPeerId.slice(0, 8) : '')
   if (lbl) $('cw-peer').textContent = lbl
+  // Show/hide the "+" add-to-call button based on whether a call is up and there
+  // is still room. Safe to call before groupCall exists (guards inside).
+  try { updateAddParticipantBtn() } catch {}
 }
 
 /* =================================== chat =================================== */
@@ -1508,6 +1512,243 @@ const call = new CallManager(client, {
   },
 })
 call.attach()
+
+/* =================================== group call manager =================================== */
+
+// Group (multi-party mesh) calls. A SEPARATE engine from the 1:1 CallManager;
+// 1:1 is intentionally left untouched. The two share the same peer transport, so
+// the onPeer dispatcher (set up just below) routes 0x38–0x3D to groupCall and
+// everything else to the 1:1 CallManager handler.
+
+// ---- group video tiles in #group-grid ----
+function groupGridEl() { return $('group-grid') }
+// Create or fetch a tile for a participant (keyed by idHex). The self tile uses
+// idHex = my own id and is muted (no echo). Each tile is a <video> wrapped in a
+// container that also holds a label caption.
+function groupTile(idHex, label, isSelf) {
+  const grid = groupGridEl()
+  let tile = grid.querySelector(`.group-tile[data-peer="${idHex}"]`)
+  if (!tile) {
+    tile = document.createElement('div')
+    tile.className = 'group-tile'
+    tile.dataset.peer = idHex
+    const vid = document.createElement('video')
+    vid.autoplay = true
+    vid.playsInline = true
+    if (isSelf) vid.muted = true
+    vid.className = 'group-video'
+    const cap = document.createElement('div')
+    cap.className = 'group-cap'
+    tile.appendChild(vid)
+    tile.appendChild(cap)
+    grid.appendChild(tile)
+  }
+  if (label != null) tile.querySelector('.group-cap').textContent = label
+  return tile
+}
+function groupTileVideo(idHex) {
+  const tile = groupGridEl().querySelector(`.group-tile[data-peer="${idHex}"]`)
+  return tile ? tile.querySelector('video') : null
+}
+function removeGroupTile(idHex) {
+  const tile = groupGridEl().querySelector(`.group-tile[data-peer="${idHex}"]`)
+  if (tile) {
+    const v = tile.querySelector('video')
+    if (v) v.srcObject = null
+    tile.remove()
+  }
+}
+function clearGroupGrid() {
+  const grid = groupGridEl()
+  grid.querySelectorAll('video').forEach(v => { v.srcObject = null })
+  grid.innerHTML = ''
+}
+
+const groupCall = new GroupCallManager(client, {
+  log: (s) => console.log(s),
+  onLocalStream: (s) => {
+    const v = groupTile(u8hex(client.myId), nickname || t('unnamed'), true).querySelector('video')
+    v.srcObject = s || null
+  },
+  onParticipantJoin: (idHex, label) => {
+    groupTile(idHex, label || idHex.slice(0, 8), false)
+  },
+  onParticipantStream: (idHex, s) => {
+    const v = groupTileVideo(idHex)
+    if (v) v.srcObject = s || null
+  },
+  onParticipantLeave: (idHex) => {
+    removeGroupTile(idHex)
+  },
+  onScreenShare: (on) => {
+    const b = $('share-screen')
+    if (b) b.classList.toggle('active', !!on)
+  },
+  onInvite: (room, hostLabel, memberLabels) => {
+    showGroupInvite(room, hostLabel, memberLabels)
+  },
+  onState: (s) => {
+    if (s === 'group:active') {
+      callActive = true
+      const w = $('call-window')
+      w.hidden = false
+      w.classList.remove('mini')
+      w.classList.add('group')
+      w.classList.remove('no-remote')
+      $('group-grid').hidden = false
+      $('peer-video').hidden = true
+      $('my-video').hidden = true
+      $('call-btn').hidden = true
+      $('cw-state').textContent = callStateLabel('connected')
+      $('cw-peer').textContent = t('add_participants')
+      updateAddParticipantBtn()
+      stopAllRings()
+    } else if (s === 'group:ended') {
+      callActive = false
+      clearGroupGrid()
+      const w = $('call-window')
+      w.classList.remove('group')
+      $('group-grid').hidden = true
+      $('peer-video').hidden = false
+      $('my-video').hidden = false
+      $('add-participant').hidden = true
+      hideCallWindow()
+      stopAllRings()
+      const callable = currentPeerId ? contactType(currentPeerId) === 'person' : true
+      $('call-btn').hidden = !callable
+    }
+  },
+})
+
+// Feed combined onPeer: group signalling (0x38–0x3D) → groupCall; everything
+// else → the existing 1:1 CallManager handler that call.attach() installed.
+const callOnPeer = client.onPeer
+client.onPeer = (msg) => {
+  if (msg.cmd >= GROUP.INVITE && msg.cmd <= GROUP.ICE) {
+    groupCall._onPeerMessage(msg)
+  } else {
+    callOnPeer(msg)
+  }
+}
+
+// Show the "+" (add-to-call) button whenever a call window is open and there's
+// still room for another participant.
+function updateAddParticipantBtn() {
+  const b = $('add-participant')
+  if (!b) return
+  if (groupCall.active) {
+    b.hidden = groupCall.participantCount >= MAX_MEMBERS - 1
+  } else {
+    // In a 1:1 call there is me + the peer = 2; room exists while < MAX_MEMBERS.
+    b.hidden = !callActive
+  }
+}
+
+/* ---- group invite dialog ---- */
+let pendingGroupInvite = null
+function showGroupInvite(room, hostLabel, memberLabels) {
+  pendingGroupInvite = { room }
+  let body = t('group_invite_body', { host: hostLabel })
+  if (memberLabels && memberLabels.length) {
+    body += ' ' + t('group_with', { members: memberLabels.join(', ') })
+  }
+  $('group-invite-text').textContent = body
+  $('dialog-group-invite').hidden = false
+  try { playIncoming() } catch {}
+}
+function clearGroupInvite() {
+  $('dialog-group-invite').hidden = true
+  pendingGroupInvite = null
+  stopAllRings()
+}
+$('group-invite-accept').onclick = () => {
+  if (!pendingGroupInvite) return
+  const { room } = pendingGroupInvite
+  clearGroupInvite()
+  groupCall.acceptInvite(room)
+}
+$('group-invite-reject').onclick = () => {
+  if (!pendingGroupInvite) return
+  const { room } = pendingGroupInvite
+  groupCall.rejectInvite(room)
+  clearGroupInvite()
+}
+
+/* ---- add-participants picker dialog ---- */
+// Build the checklist from callable contacts, excluding myself and anyone
+// already in the current call (1:1 peer or active group members). Enforces the
+// MAX_MEMBERS cap by disabling extra checks once full.
+function openAddParticipants() {
+  const list = $('add-participants-list')
+  list.innerHTML = ''
+  const myHex = u8hex(client.myId)
+  // ids already part of the call: active group members, or the live 1:1 peer.
+  const inCall = new Set()
+  if (groupCall.active) {
+    for (const [idHex, m] of groupCall.members) if (m.active) inCall.add(idHex)
+  } else if (call.active && currentPeerId) {
+    inCall.add(currentPeerId)
+  }
+  // Current head-count including me.
+  const currentCount = groupCall.active
+    ? 1 + groupCall.participantCount
+    : (call.active ? 2 : 1)
+  const checkboxes = []
+  const updateCaps = () => {
+    const checked = checkboxes.filter(c => c.checked).length
+    const full = currentCount + checked >= MAX_MEMBERS
+    for (const c of checkboxes) c.disabled = full && !c.checked
+  }
+  for (const [idHex, p] of Object.entries(peerBook)) {
+    if (idHex === myHex) continue
+    if (inCall.has(idHex)) continue
+    if (p.type === 'info' || p.type === 'claude') continue
+    const row = document.createElement('label')
+    row.className = 'add-participant-row'
+    const cb = document.createElement('input')
+    cb.type = 'checkbox'
+    cb.dataset.peer = idHex
+    cb.onchange = updateCaps
+    const span = document.createElement('span')
+    span.textContent = p.label || idHex.slice(0, 8)
+    row.appendChild(cb)
+    row.appendChild(span)
+    list.appendChild(row)
+    checkboxes.push(cb)
+  }
+  updateCaps()
+  $('dialog-add-participants').hidden = false
+}
+function clearAddParticipants() { $('dialog-add-participants').hidden = true }
+$('add-participant').onclick = () => openAddParticipants()
+$('add-participants-cancel').onclick = () => clearAddParticipants()
+$('add-participants-confirm').onclick = async () => {
+  const checked = Array.from(
+    $('add-participants-list').querySelectorAll('input[type=checkbox]:checked')
+  ).map(c => c.dataset.peer)
+  clearAddParticipants()
+  if (!checked.length && !(call.active && currentPeerId)) return
+  const myHex = u8hex(client.myId)
+  // Build the roster: me + current 1:1 peer (if any) + the newly checked.
+  const roster = [{ id: myHex, qr: client.qrText(nickname || ''), label: nickname || '' }]
+  const seen = new Set([myHex])
+  const addPeer = (idHex) => {
+    if (seen.has(idHex)) return
+    const p = peerBook[idHex]
+    if (!p || !p.qr) return
+    seen.add(idHex)
+    roster.push({ id: idHex, qr: p.qr, label: p.label || idHex.slice(0, 8) })
+  }
+  // If a 1:1 call is up, fold its peer into the group and end the 1:1 leg — the
+  // peer will get the group INVITE and re-join as a group member.
+  const onePeer = (call.active && currentPeerId) ? currentPeerId : null
+  if (onePeer) addPeer(onePeer)
+  for (const idHex of checked) addPeer(idHex)
+  if (roster.length < 2) { toast(t('no_peer'), 'error'); return }
+  if (roster.length > MAX_MEMBERS) { toast(t('group_full'), 'error'); roster.length = MAX_MEMBERS }
+  if (onePeer && call.active) { try { call.hangup() } catch {} }
+  await groupCall.start(roster)
+}
 
 let pendingIncoming = null
 let incomingTimer = null
@@ -2522,17 +2763,20 @@ function startOutgoingCall(idHex) {
   maybeWake(idHex, true)  // true = call → ringtone push
 }
 $('call-btn').onclick = () => startOutgoingCall(currentPeerId)
-$('hangup-btn').onclick = () => call.hangup()
+// Hang-up routes to whichever engine is active: group mesh leaves the room,
+// otherwise the 1:1 call hangs up. (Same routing for the header ✕ and PiP ✕.)
+const endActiveCall = () => { groupCall.active ? groupCall.leave() : call.hangup() }
+$('hangup-btn').onclick = () => endActiveCall()
 
 /* Floating call-window chrome. Minimize collapses to a draggable PiP; close
  * hangs up (onState→idle then hides the window via resetCallButtons). */
 $('cw-min').onclick   = minimizeCall
-$('cw-close').onclick = () => call.hangup()
+$('cw-close').onclick = () => endActiveCall()
 // Direct hang-up from the minimized PiP. stopPropagation so the window's
 // pointer handlers don't also treat it as a tap-to-expand.
-$('cw-mini-end').onclick = (e) => { e.stopPropagation(); call.hangup() }
+$('cw-mini-end').onclick = (e) => { e.stopPropagation(); endActiveCall() }
 
-$('switch-cam').onclick = () => call.switchCamera()
+$('switch-cam').onclick = () => call.switchCamera()  // 1:1 only; group uses front cam
 // Screen share (web/desktop only — getDisplayMedia doesn't exist in the
 // Android WebView, so the button stays hidden there). Toggles the outgoing
 // video between the camera and the shared screen; the .active class lights the
@@ -2540,19 +2784,19 @@ $('switch-cam').onclick = () => call.switchCamera()
 // also resets when the browser's own "Stop sharing" bar ends it.
 if (navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function') {
   $('share-screen').hidden = false
-  $('share-screen').onclick = () => call.toggleScreenShare()
+  $('share-screen').onclick = () => groupCall.active ? groupCall.toggleScreenShare() : call.toggleScreenShare()
 }
 // Mic toggle: checked = mic ON. toggleMute() returns the new muted state, so
 // the checkbox is the negation of it (kept in sync even if the call flips it).
 $('mute-toggle').onchange = (e) => {
-  const muted = call.toggleMute()
+  const muted = groupCall.active ? groupCall.toggleMute() : call.toggleMute()
   const on = !muted
   e.target.checked = on
   saveMicPref(on)
 }
 // Video toggle: checked = video ON. toggleVideo() returns the new "off" state.
 $('video-toggle').onchange = (e) => {
-  const off = call.toggleVideo()
+  const off = groupCall.active ? groupCall.toggleVideo() : call.toggleVideo()
   const on = !off
   e.target.checked = on
   saveVideoPref(on)
