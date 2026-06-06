@@ -82,6 +82,24 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }),
             )
+            // Bare connection count — just the number, as plain text. Public,
+            // no auth. Handy for a dashboard widget or `curl … | cat`.
+            .route(
+                "/count",
+                web::get().to({
+                    move |hub: web::Data<Arc<RwLock<HubState>>>| {
+                        let hub = hub.clone();
+                        async move {
+                            let n = hub.read().await.len();
+                            Ok::<_, actix_web::Error>(
+                                HttpResponse::Ok()
+                                    .content_type("text/plain; charset=utf-8")
+                                    .body(n.to_string()),
+                            )
+                        }
+                    }
+                }),
+            )
     })
     .bind(bind)?
     .run()
