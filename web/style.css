@@ -284,6 +284,13 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   -webkit-tap-highlight-color: transparent;
 }
 .callbtn:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+/* Lit state for a toggled call button (currently: screen-share is active). */
+.callbtn.active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.callbtn.active:hover { background: var(--accent); filter: brightness(1.08); }
 /* Hang up: bright red — a wider rounded pill (a tight circle was awkward to hit). */
 .callbtn-end {
   width: auto; min-width: 72px; padding: 0 20px; border-radius: 22px;

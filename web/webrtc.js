@@ -347,6 +347,83 @@ export class CallManager {
     this.ui.onLocalStream(this.localStream)
   }
 
+  /** True while we're sending the screen instead of the camera. */
+  get isScreenSharing() { return !!this._screenStream }
+
+  /** Toggle screen sharing. ON: grab the display via getDisplayMedia and swap
+   *  it into the existing video sender (replaceTrack — no SDP renegotiation,
+   *  same as switchCamera). OFF: restore the camera. The browser's own
+   *  "Stop sharing" bar also ends it: the track's `onended` fires and we
+   *  restore the camera automatically. Returns the new sharing state.
+   *  getDisplayMedia is desktop-browser only — the UI hides the button where
+   *  it's unavailable, so this is effectively a web-only feature. */
+  async toggleScreenShare() {
+    if (!this.localStream) return false
+    if (this._screenStream) { await this._stopScreenShare(); return false }
+
+    let display
+    try {
+      display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
+    } catch (e) {
+      // User dismissed the picker, or capture is unsupported — stay on camera.
+      this.ui.log(`x getDisplayMedia: ${e}`)
+      return false
+    }
+    const screenTrack = display.getVideoTracks()[0]
+    if (!screenTrack) { this.ui.log('x no screen track'); return false }
+
+    // Drop the camera track (stops the capture/LED) and put the screen in its
+    // place, both in the self-view stream and on the wire.
+    const old = this.localStream.getVideoTracks()[0]
+    old?.stop()
+    if (old) this.localStream.removeTrack(old)
+    this.localStream.addTrack(screenTrack)
+    if (this.pc) {
+      const sender = this.pc.getSenders().find(s => s.track && s.track.kind === 'video')
+                  ?? this.pc.getSenders().find(s => s.track === null)
+      if (sender) await sender.replaceTrack(screenTrack)
+    }
+    // Make sure a previously-muted video doesn't keep the share suppressed.
+    this._videoOff = false
+    this._screenStream = display
+    // Browser "Stop sharing" → restore the camera.
+    screenTrack.onended = () => { this._stopScreenShare().catch(() => {}) }
+    this.ui.onLocalStream(this.localStream)
+    this.ui.onScreenShare?.(true)
+    return true
+  }
+
+  /** Restore the camera after screen sharing ends (via toggle or the browser's
+   *  "Stop sharing" bar). Idempotent. */
+  async _stopScreenShare() {
+    if (!this._screenStream) return
+    const display = this._screenStream
+    this._screenStream = null
+    // Re-acquire a fresh camera track (the old one was stopped on share start).
+    let cam = null
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: this.preferredFacing } },
+        audio: false,
+      })
+      cam = s.getVideoTracks()[0]
+    } catch (e) {
+      this.ui.log(`x restore camera: ${e}`)
+    }
+    const screenTrack = this.localStream?.getVideoTracks()[0]
+    screenTrack?.stop()
+    if (screenTrack && this.localStream) this.localStream.removeTrack(screenTrack)
+    display.getTracks().forEach(t => t.stop())
+    if (this.localStream && cam) this.localStream.addTrack(cam)
+    if (this.pc) {
+      const sender = this.pc.getSenders().find(s => s.track && s.track.kind === 'video')
+                  ?? this.pc.getSenders().find(s => s.track === null)
+      if (sender) await sender.replaceTrack(cam ?? null)
+    }
+    this.ui.onLocalStream(this.localStream)
+    this.ui.onScreenShare?.(false)
+  }
+
   /**
    * Snapshot the active ICE candidate pair and a few transport metrics.
    * Returns null when no call is active or stats are not yet available.
@@ -686,6 +763,13 @@ export class CallManager {
       this.pc?.close()
     } catch {}
     this.pc = null
+    // Stop any screen capture (its track lives in localStream, stopped below,
+    // but drop the reference and tell the UI so the button resets).
+    if (this._screenStream) {
+      this._screenStream.getTracks().forEach(t => t.stop())
+      this._screenStream = null
+      this.ui.onScreenShare?.(false)
+    }
     this.localStream?.getTracks().forEach(t => t.stop())
     this.localStream = null
     this.peerId = null

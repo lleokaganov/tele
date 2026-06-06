@@ -1321,6 +1321,12 @@ const call = new CallManager(client, {
     }
     if (!s) callPrefsApplied = false   // reset on teardown
   },
+  // Screen-share state changed (user toggled it, the browser's "Stop sharing"
+  // bar ended it, or the call tore down). Keep the button's lit state in sync.
+  onScreenShare: (on) => {
+    const b = $('share-screen')
+    if (b) b.classList.toggle('active', !!on)
+  },
   onRemoteStream: (s) => {
     $('peer-video').srcObject = s || null
     // Until the remote video arrives the self-view fills the window (mirror to
@@ -2527,6 +2533,15 @@ $('cw-close').onclick = () => call.hangup()
 $('cw-mini-end').onclick = (e) => { e.stopPropagation(); call.hangup() }
 
 $('switch-cam').onclick = () => call.switchCamera()
+// Screen share (web/desktop only — getDisplayMedia doesn't exist in the
+// Android WebView, so the button stays hidden there). Toggles the outgoing
+// video between the camera and the shared screen; the .active class lights the
+// button while sharing, kept in sync via the onScreenShare ui hook below so it
+// also resets when the browser's own "Stop sharing" bar ends it.
+if (navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function') {
+  $('share-screen').hidden = false
+  $('share-screen').onclick = () => call.toggleScreenShare()
+}
 // Mic toggle: checked = mic ON. toggleMute() returns the new muted state, so
 // the checkbox is the negation of it (kept in sync even if the call flips it).
 $('mute-toggle').onchange = (e) => {
