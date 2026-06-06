@@ -347,7 +347,9 @@ export class GroupCallManager {
   }
 
   _closePeer(m) {
-    try { m.pc?.getSenders().forEach(s => s.track && s.pc) } catch {}
+    // Only close the connection — do NOT stop tracks here: the local audio/video
+    // tracks are shared across every peer's RTCPeerConnection. They're stopped
+    // once in _teardown(). Remote tracks die with the pc.
     try { m.pc?.close() } catch {}
     m.pc = null
     m.pendingIce = []
