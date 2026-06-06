@@ -310,8 +310,7 @@ export class GroupCallManager {
 
   async _connectTo(m) {
     if (m.pc) return
-    this._makePeer(m)
-    for (const t of this.localStream.getTracks()) m.pc.addTrack(t, this.localStream)
+    this._makePeer(m)   // _makePeer attaches our local tracks (single source of truth)
     const offer = await m.pc.createOffer()
     await m.pc.setLocalDescription(offer)
     this._sendTo(m, GROUP.OFFER, { room: this.room, sdp: offer.sdp })
