@@ -1563,6 +1563,13 @@ function clearGroupGrid() {
   grid.querySelectorAll('video').forEach(v => { v.srcObject = null })
   grid.innerHTML = ''
 }
+// Keep the call-window header in sync with the live participant count + update
+// the "+" button (it disables once the room is full).
+function refreshGroupHeader() {
+  if (!groupCall.active) return
+  $('cw-peer').textContent = `👥 ${1 + groupCall.participantCount}`
+  updateAddParticipantBtn()
+}
 
 const groupCall = new GroupCallManager(client, {
   log: (s) => console.log(s),
@@ -1572,6 +1579,7 @@ const groupCall = new GroupCallManager(client, {
   },
   onParticipantJoin: (idHex, label) => {
     groupTile(idHex, label || idHex.slice(0, 8), false)
+    refreshGroupHeader()
   },
   onParticipantStream: (idHex, s) => {
     const v = groupTileVideo(idHex)
@@ -1579,6 +1587,7 @@ const groupCall = new GroupCallManager(client, {
   },
   onParticipantLeave: (idHex) => {
     removeGroupTile(idHex)
+    refreshGroupHeader()
   },
   onScreenShare: (on) => {
     const b = $('share-screen')
@@ -1600,7 +1609,8 @@ const groupCall = new GroupCallManager(client, {
       $('my-video').hidden = true
       $('call-btn').hidden = true
       $('cw-state').textContent = callStateLabel('connected')
-      $('cw-peer').textContent = t('add_participants')
+      // Header shows a group glyph + live participant count (me + others).
+      $('cw-peer').textContent = `👥 ${1 + groupCall.participantCount}`
       updateAddParticipantBtn()
       stopAllRings()
     } else if (s === 'group:ended') {

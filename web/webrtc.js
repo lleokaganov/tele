@@ -118,6 +118,11 @@ export class CallManager {
     this.client.onPeer = (msg) => this._onPeerMessage(msg)
   }
 
+  /** True while a 1:1 call is in progress (ringing, connecting or connected).
+   *  Read-only — used by the group-call flow to decide whether to fold the
+   *  current 1:1 peer into a new group. Does not change call behaviour. */
+  get active() { return !!(this.pc || this.peerId) }
+
   /* ------------------- public actions ------------------- */
 
   async call(peerId) {
