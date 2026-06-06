@@ -40,7 +40,9 @@ export const MSG_EDIT_CMD     = 0x29
 export const READ_ACK_CMD     = 0x2A
 
 // Single, locally-operated STUN + TURN inside the project's infra.
-const TURN_SERVERS = [
+// Exported so the group-call mesh (group_call.js) reuses the exact same ICE
+// config as 1:1 calls.
+export const TURN_SERVERS = [
   { urls: 'stun:telefon.lleo.me:3478' },
   {
     urls: [
