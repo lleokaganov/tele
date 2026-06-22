@@ -177,45 +177,29 @@ const SRV_DEFAULTS = {
 // The mailbox public X-key is endpoint-specific (each install has its own
 // keypair); the default is picked here by matching against the configured
 // server X-pub. The user can override the mailbox pubkey from settings —
-// see "Mailbox" section in openSettings().
+// see "Mailbox" section in openSettings(). See ws_mailbox/doc/PROTOCOL.md
+// (Deploy section) for the canonical key list.
+//
+//   Pi  (ws.lleo.me / tele.lleo.me / tele.karlson.ru): mailbox 56610f91...
+//   RU VPS (telefon.lleo.me independent instance):     mailbox 908a3893...
+//
+// Today the only default we actually ship is the Pi entry (SRV_DEFAULTS.xpub
+// is the Pi server). The RU row will activate the day a user manually
+// configures their server x_pub to the RU one in Settings, and the lookup
+// then picks the right mailbox automatically.
 const MAILBOX_DEFAULTS = {
-  // Home Pi (ws.lleo.me / tele.lleo.me / tele.karlson.ru).
+  // Pi server x_pub → Pi mailbox x_pub.
   '4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06':
     '56610f910d80004271ece6440e6798f268aff1e6ec85ce0e605864f1b5cefc0c',
-  // Hetzner-style "current relay" (we ship tele.karlson.ru as default
-  // server, which is a CNAME to the Pi instance, same x_pub as above).
-  // RU VPS (telefon.lleo.me) — independent server identity.
-  // The full RU server x_pub goes here once it is wired into the client's
-  // server_x_pub. Until then this row is unused, but kept so the table
-  // remains the single source of mailbox pubkeys per endpoint.
-  // (Listed by the actual server x_pub from ws_mailbox/doc/PROTOCOL.md.)
-  // tele.lleo.me-russia identity is not currently shipped as a default
-  // SRV_DEFAULTS, but adding it here keeps the lookup honest.
+  // RU VPS server x_pub → RU mailbox x_pub. The RU server x_pub is the
+  // independent identity generated for telefon.lleo.me. Listed here for
+  // forward-compat; today no client ships RU as its default endpoint.
+  // (See ws_mailbox/doc/PROTOCOL.md → Deploy → RU VPS.)
+  // Filled in once the RU server's full x_pub is known to the client.
+  // TODO: the wasm module bakes its SERVER_X_PUB to the Pi today; if a
+  // future build switches to the RU server, replace the key below with the
+  // matching RU server x_pub.
 }
-// RU VPS endpoint: server x_pub from the deploy table in PROTOCOL.md.
-// Listed explicitly so users who manually point at telefon.lleo.me also
-// pick up the right mailbox automatically.
-MAILBOX_DEFAULTS['4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06']
-  = '56610f910d80004271ece6440e6798f268aff1e6ec85ce0e605864f1b5cefc0c'
-// RU VPS server has its own x_pub (independent install). The exact hex is
-// the telefon.lleo.me identity — kept here as a separate entry in case
-// SRV_DEFAULTS ever switches to it.
-// NOTE: at the time of writing telefon.lleo.me's server x_pub is the same
-// 4e82... constant baked into the wasm module (SERVER_X_PUB), so the
-// MAILBOX_DEFAULTS lookup above suffices. If a future deploy changes the
-// server x_pub, add a row here.
-
-// RU-VPS mailbox (next to telefon.lleo.me). Reached when the client is
-// pointed at a relay running that install. Indexed by the RU VPS's own
-// server x_pub. See ws_mailbox/doc/PROTOCOL.md → Deploy.
-//
-// Pi mailbox: id 56610f910d800042, pub 56610f910d800042...5cefc0c
-// RU mailbox: id 908a3893e8ca22f0, pub 908a3893e8ca22f0...95a1a0a
-//
-// Today both SRV_DEFAULTS.xpub points to the Pi (4e82...), so the only
-// useful mapping is the first row. The RU row is wired for the day the
-// client lets the user switch endpoints fully (custom server pubkey in
-// settings) — the lookup will then pick the right mailbox automatically.
 
 function pickDefaultMailboxXpubFor(serverXpubHex) {
   return MAILBOX_DEFAULTS[serverXpubHex] || ''
@@ -1701,15 +1685,267 @@ const groupCall = new GroupCallManager(client, {
   },
 })
 
-// Feed combined onPeer: group signalling (0x38–0x3D) → groupCall; everything
-// else → the existing 1:1 CallManager handler that call.attach() installed.
+// Feed combined onPeer: group signalling (0x38–0x3D) → groupCall;
+// mailbox responses → mailbox handler; everything else → the existing 1:1
+// CallManager handler that call.attach() installed.
 const callOnPeer = client.onPeer
 client.onPeer = (msg) => {
   if (msg.cmd >= GROUP.INVITE && msg.cmd <= GROUP.ICE) {
     groupCall._onPeerMessage(msg)
+  } else if (isMailboxFrame(msg)) {
+    onMailboxMessage(msg)
   } else {
     callOnPeer(msg)
   }
+}
+
+// True iff this peer-frame came from the configured mailbox (cmd is one of
+// the mailbox response op-codes AND from_id matches the mailbox ClientId).
+function isMailboxFrame(msg) {
+  const mid = mailboxIdHex()
+  if (!mid) return false
+  const fromHex = u8hex(msg.from_id)
+  if (fromHex !== mid) return false
+  return msg.cmd === MBX.DELIVERY || msg.cmd === MBX.EMPTY
+      || msg.cmd === MBX.STORED   || msg.cmd === MBX.TOO_BIG
+      || msg.cmd === MBX.MAILBOX_FULL
+      || msg.cmd === MBX.DELETED  || msg.cmd === MBX.NOT_FOUND
+}
+
+/* =================================== mailbox =================================== */
+// The mailbox is a peer like any other; we wire it up just like a contact
+// (addPeer once, then send peer-frames with mailbox op-codes as the cmd).
+//
+// Send path: when a peer is offline at send time, instead of "give up and
+// wait for PEER_ONLINE", wrap the message in a self-contained envelope
+// and STORE it on the mailbox. The recipient will FETCH_NEXT on their next
+// wake. The 24-byte nonce used to encrypt the envelope is persisted so a
+// later DELETE (cancel) can rebuild byte-identical ciphertext.
+
+let mailboxIntroduced = false        // once per session is enough
+let mailboxFetching   = false        // re-entrancy guard for the FETCH loop
+
+// Pending STORE state, keyed by msgId, so the matching STORED / TOO_BIG /
+// MAILBOX_FULL response can resolve / display feedback. Cleared on response.
+const pendingMailboxStore = new Map()  // msgId -> { peerIdHex, nonce, resolve }
+
+// Pending DELETE state, keyed by msgId — answered by DELETED / NOT_FOUND.
+const pendingMailboxDelete = new Map() // msgId -> { resolve }
+
+// Ensure the mailbox peer is in the address book and has been INTRODUCE'd
+// at least once in this session so it knows our sender_x_pub for AEAD.
+function ensureMailboxPeer() {
+  const xpubHex = mailboxXpubHex()
+  if (!xpubHex || xpubHex.length !== 64) return null
+  const xpub = hexU8(xpubHex)
+  const id = xpub.slice(0, 8)
+  const idHex = u8hex(id)
+  // Add a synthetic ed_pub of zeros: we never verify signatures FROM the
+  // mailbox to us, only encrypt to its x_pub. addPeer requires an ed_pub
+  // because peer-frames are signed both ways; for the mailbox we trust
+  // the relay-side authentication (handshake guarantees this is the
+  // mailbox identity by x_pub) and ignore signature failures on its
+  // responses. To keep parse_incoming happy we still need a valid ed_pub.
+  // Until the mailbox's ed_pub is known statically, fall back to using
+  // its full 32-byte x_pub as a placeholder — addPeer will reject if
+  // ed_pub isn't a valid curve point, which lets us notice.
+  // (TODO: ship mailbox ed_pub here once it's hard-wired in PROTOCOL.md
+  //  — see the deploy table. Today both ed_pubs are listed: Pi has
+  //  ade527... and RU has 923fb0... .)
+  let edPubHex = ''
+  // Pi mailbox known ed_pub:
+  if (xpubHex === '56610f910d80004271ece6440e6798f268aff1e6ec85ce0e605864f1b5cefc0c') {
+    edPubHex = 'ade527278a40c20f0848c1ff8f2935f7e3c1ee1775dc196023c726c9dea53355'
+  }
+  // RU mailbox known ed_pub:
+  if (xpubHex === '908a3893e8ca22f09dc11a2377e24cce07446c0cf8da791f095a6056495a1a0a') {
+    edPubHex = '923fb08a65db92bdf9254d5ab5e945541a8e8930a474d9524176c006d6e4cad2'
+  }
+  if (!edPubHex) return null    // unknown mailbox — can't verify signatures
+  try {
+    if (!client.session.hasPeer(id)) {
+      client.addPeer(xpub, hexU8(edPubHex))
+    }
+  } catch (e) { console.warn('mailbox addPeer', e); return null }
+  if (!mailboxIntroduced) {
+    try { client.introduce(id, nickname || '') ; mailboxIntroduced = true } catch {}
+  }
+  return { id, idHex, xpub }
+}
+
+// STORE a peer-bound text message in the mailbox. Returns a promise that
+// resolves to { ok: true, nonce } or { ok: false, reason }.
+async function mailboxStoreText(recipientIdHex, msgId, text) {
+  if (!mailboxEnabled()) return { ok: false, reason: 'disabled' }
+  const m = ensureMailboxPeer()
+  if (!m) return { ok: false, reason: 'no_mailbox' }
+  if (!client.isConnected()) return { ok: false, reason: 'offline' }
+  const recipientId = hexU8(recipientIdHex)
+  // Recipient must be in our address book so we can encrypt to their x_pub.
+  if (!client.session.hasPeer(recipientId)) return { ok: false, reason: 'no_peer_keys' }
+  // Recipient x_pub — first 32 bytes of their QR.
+  const recipient = peerBook[recipientIdHex]
+  const recipientXpub = recipient && qrXpubBytes(recipient.qr)
+  if (!recipientXpub) return { ok: false, reason: 'no_peer_xpub' }
+  // Build the same text-body shape as a live TEXT peer-frame:
+  //   [msg_id : 16 bytes UUID][utf-8 text]
+  const idU8 = uuidToBytes16(msgId)
+  const txt = new TextEncoder().encode(text)
+  const innerBody = new Uint8Array(16 + txt.length)
+  innerBody.set(idU8, 0); innerBody.set(txt, 16)
+  // Encrypt to the recipient and capture the nonce.
+  const { env, nonce } = client.buildMailboxEnvelope(recipientId, CMD.TEXT, innerBody)
+  // Send STORE to the mailbox.
+  const okSend = client.mailboxSend(m.id, MBX.STORE, recipientXpub, env)
+  if (!okSend) return { ok: false, reason: 'ws_down' }
+  // Wait for the mailbox response (STORED / TOO_BIG / MAILBOX_FULL).
+  return new Promise((resolve) => {
+    pendingMailboxStore.set(msgId, { peerIdHex: recipientIdHex, nonce, resolve })
+    // Safety timeout — never hang the UI forever.
+    setTimeout(() => {
+      if (pendingMailboxStore.has(msgId)) {
+        pendingMailboxStore.delete(msgId)
+        resolve({ ok: false, reason: 'timeout' })
+      }
+    }, 8000)
+  })
+}
+
+// DELETE a previously-STORE'd message. Reproduces the original ciphertext
+// by re-encrypting the same plaintext with the saved nonce. The mailbox
+// keys its lookup by blake3(sender_id || ciphertext), so the bytes must
+// match the original STORE exactly.
+async function mailboxDeleteText(recipientIdHex, msgId, text) {
+  const m = ensureMailboxPeer()
+  if (!m) return { ok: false, reason: 'no_mailbox' }
+  if (!client.isConnected()) return { ok: false, reason: 'offline' }
+  const nonce = await Storage.getMailboxNonce(msgId)
+  if (!nonce) return { ok: false, reason: 'no_nonce' }
+  const recipientId = hexU8(recipientIdHex)
+  if (!client.session.hasPeer(recipientId)) return { ok: false, reason: 'no_peer_keys' }
+  const recipient = peerBook[recipientIdHex]
+  const recipientXpub = recipient && qrXpubBytes(recipient.qr)
+  if (!recipientXpub) return { ok: false, reason: 'no_peer_xpub' }
+  const idU8 = uuidToBytes16(msgId)
+  const txt = new TextEncoder().encode(text)
+  const innerBody = new Uint8Array(16 + txt.length)
+  innerBody.set(idU8, 0); innerBody.set(txt, 16)
+  const env = client.rebuildMailboxEnvelope(recipientId, CMD.TEXT, innerBody, nonce)
+  const okSend = client.mailboxSend(m.id, MBX.DELETE, recipientXpub, env)
+  if (!okSend) return { ok: false, reason: 'ws_down' }
+  return new Promise((resolve) => {
+    pendingMailboxDelete.set(msgId, { resolve })
+    setTimeout(() => {
+      if (pendingMailboxDelete.has(msgId)) {
+        pendingMailboxDelete.delete(msgId)
+        resolve({ ok: false, reason: 'timeout' })
+      }
+    }, 8000)
+  })
+}
+
+// Drive a FETCH_NEXT loop on the mailbox until it answers EMPTY. Called
+// after the relay handshake completes and on wakeConnection().
+async function fetchMailbox() {
+  if (!mailboxEnabled()) return
+  const m = ensureMailboxPeer()
+  if (!m) return
+  if (mailboxFetching) return
+  if (!client.isConnected()) return
+  mailboxFetching = true
+  try {
+    // Drive one round-trip: send FETCH_NEXT; the response handler will
+    // call fetchMailbox() again if it received a DELIVERY (until EMPTY).
+    client.mailboxFetchNext(m.id)
+  } catch (e) {
+    console.warn('mailbox fetch', e)
+    mailboxFetching = false
+  }
+}
+
+// Dispatch a peer-frame whose sender is the mailbox. cmd encodes the
+// response op-code.
+function onMailboxMessage(msg) {
+  switch (msg.cmd) {
+    case MBX.STORED: {
+      // Match to the most recent pending STORE — body carries no msg_id,
+      // so we resolve all pending entries in FIFO order (one at a time).
+      const firstKey = pendingMailboxStore.keys().next().value
+      if (firstKey !== undefined) {
+        const entry = pendingMailboxStore.get(firstKey)
+        pendingMailboxStore.delete(firstKey)
+        entry.resolve({ ok: true, nonce: entry.nonce })
+      }
+      break
+    }
+    case MBX.TOO_BIG: {
+      const firstKey = pendingMailboxStore.keys().next().value
+      if (firstKey !== undefined) {
+        const entry = pendingMailboxStore.get(firstKey)
+        pendingMailboxStore.delete(firstKey)
+        entry.resolve({ ok: false, reason: 'too_big' })
+      }
+      break
+    }
+    case MBX.MAILBOX_FULL: {
+      const firstKey = pendingMailboxStore.keys().next().value
+      if (firstKey !== undefined) {
+        const entry = pendingMailboxStore.get(firstKey)
+        pendingMailboxStore.delete(firstKey)
+        entry.resolve({ ok: false, reason: 'mailbox_full' })
+      }
+      break
+    }
+    case MBX.DELETED: {
+      const firstKey = pendingMailboxDelete.keys().next().value
+      if (firstKey !== undefined) {
+        const entry = pendingMailboxDelete.get(firstKey)
+        pendingMailboxDelete.delete(firstKey)
+        entry.resolve({ ok: true })
+      }
+      break
+    }
+    case MBX.NOT_FOUND: {
+      const firstKey = pendingMailboxDelete.keys().next().value
+      if (firstKey !== undefined) {
+        const entry = pendingMailboxDelete.get(firstKey)
+        pendingMailboxDelete.delete(firstKey)
+        entry.resolve({ ok: false, reason: 'not_found' })
+      }
+      break
+    }
+    case MBX.EMPTY: {
+      mailboxFetching = false
+      break
+    }
+    case MBX.DELIVERY: {
+      // Decrypt the envelope and reinject it into the normal peer-message
+      // dispatch path so TEXT / FILE_OFFER / etc. all just work.
+      try {
+        const inner = client.parseMailboxEnvelope(msg.body)
+        if (inner.kind === 'peer') {
+          // Hand-off to the same dispatcher as a live peer frame.
+          client.onPeer(inner)
+        } else {
+          console.warn('mailbox delivery parse error', inner.reason)
+        }
+      } catch (e) { console.warn('mailbox delivery', e) }
+      // Keep draining: more may be queued. The mailbox returns one blob
+      // per FETCH_NEXT, so loop until we get EMPTY.
+      try { const m2 = ensureMailboxPeer(); if (m2) client.mailboxFetchNext(m2.id) }
+      catch (e) { console.warn('mailbox refetch', e); mailboxFetching = false }
+      break
+    }
+  }
+}
+
+// Helper used in mailboxStoreText: 16-byte UUID -> Uint8Array. Duplicated
+// from ws_client.js's internal uuidToBytes since that one isn't exported.
+function uuidToBytes16(uuid) {
+  const hex = uuid.replace(/-/g, '')
+  const out = new Uint8Array(16)
+  for (let i = 0; i < 16; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16)
+  return out
 }
 
 // Show the "+" (add-to-call) button whenever a call window is open and there's
@@ -1938,6 +2174,15 @@ client.onState = ({ state, detail }) => {
     } else {
       registerWebPush()
     }
+    // Mailbox FETCH cycle: pull anything peers left for us while we were
+    // offline. The loop continues internally until the mailbox answers EMPTY.
+    mailboxIntroduced = false  // each fresh session re-introduces
+    mailboxFetching = false    // dropped any stuck-pending loop from a prior socket
+    fetchMailbox().catch((e) => console.warn('mailbox fetch on connect', e))
+  }
+  // Drop fetch guard on disconnect so the next reconnect can start fresh.
+  if (state === 'closed' || state === 'rejected') {
+    mailboxFetching = false
   }
 }
 
@@ -2049,7 +2294,13 @@ function wakeConnection() {
     // if the last inbound is older than one ping cycle + jitter — don't tear
     // down a live channel — and well under the server's 60s drop timeout.
     const stale = Date.now() - (client.lastRx || 0) > 25000
-    if (!client.isConnected() || stale) client.forceReconnect()
+    if (!client.isConnected() || stale) {
+      client.forceReconnect()
+    } else {
+      // Live channel: just nudge a mailbox fetch in case anything queued
+      // up while the tab was hidden.
+      fetchMailbox().catch((e) => console.warn('mailbox fetch on wake', e))
+    }
   } catch {}
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) wakeConnection() })
@@ -3013,8 +3264,33 @@ $('send-text').onclick = async () => {
     entry.timer = setTimeout(() => deliveryWatchdog(msgId), DELIVERY_WATCHDOG_MS)
     pendingDelivery.set(msgId, entry)
   }
-  // If the recipient is offline, nudge the server to push-wake them.
+  // If the recipient is offline, push-wake them AND drop a copy in the
+  // mailbox so it arrives even if the wake never fires (background apps,
+  // doze mode, no push token, etc.). The wake nudge is fire-and-forget;
+  // the mailbox STORE is awaited for UI feedback (TOO_BIG / MAILBOX_FULL).
   maybeWake(currentPeerId)
+  if (ok && persist && !peerBook[currentPeerId]?.online) {
+    storeInMailboxOnOffline(currentPeerId, msgId, text)
+  }
+}
+
+// Background task: STORE a freshly-sent message in the recipient's mailbox
+// if they were offline. Awaited only for its toast UI; the message is
+// already in the local outbox and will be retried via flushOutboxFor on
+// PEER_ONLINE regardless of the mailbox outcome.
+async function storeInMailboxOnOffline(peerIdHex, msgId, text) {
+  try {
+    const r = await mailboxStoreText(peerIdHex, msgId, text)
+    if (r.ok) {
+      await Storage.setMailboxNonce(msgId, r.nonce)
+    } else if (r.reason === 'too_big') {
+      toast(t('mailbox_too_big') || 'message too big for offline delivery', 'error')
+    } else if (r.reason === 'mailbox_full') {
+      toast(t('mailbox_full') || 'recipient mailbox is full', 'error')
+    }
+    // disabled / no_mailbox / no_peer_keys / no_peer_xpub / offline / ws_down /
+    // timeout: silent — the outbox + PEER_ONLINE path is the safety net.
+  } catch (e) { console.warn('mailbox store', e) }
 }
 
 // Delivery watchdog: runs DELIVERY_WATCHDOG_MS after a text send (and again after
@@ -3872,6 +4148,25 @@ function openSettings() {
       <input id="set-url" class="input" type="text" data-nopersist hidden />
     </div>
 
+    <div class="set-sec">
+      <h3>Mailbox</h3>
+      <div class="set-line">
+        <span class="set-label">Use offline cache</span>
+        <label class="toggle">
+          <input id="set-mailbox-on" type="checkbox" data-nopersist />
+          <span class="track"></span>
+        </label>
+      </div>
+      <div class="set-line">
+        <span class="set-label">Mailbox pubkey</span>
+        <input id="set-mailbox-xpub" class="input" type="text" data-nopersist placeholder="64 hex chars" />
+      </div>
+      <div class="set-line">
+        <span class="set-label"></span>
+        <button id="set-mailbox-reset" class="btn btn-ghost">Reset to default</button>
+      </div>
+    </div>
+
     <div class="set-line">
       <span class="set-label">${escapeHtml(t('update'))}</span>
       <button id="set-update" class="btn btn-ghost">${escapeHtml(t('check_update'))}</button>
@@ -4017,6 +4312,57 @@ function openSettings() {
     else if (e.key === 'Escape') { e.preventDefault(); showUrlText() }
   }
   showUrlText()
+
+  // ── Mailbox ──
+  // Offline cache: on/off + override the mailbox X-pubkey for the current
+  // endpoint. Empty pubkey == feature off (defensive: even if the flag is
+  // checked, no mailbox to talk to means nothing happens). Pubkey is shown
+  // unmasked — it is public material, not a secret.
+  const mbxOn   = q('#set-mailbox-on')
+  const mbxXpub = q('#set-mailbox-xpub')
+  const mbxReset = q('#set-mailbox-reset')
+  const defaultMbxXpub = () => {
+    const srvXpub = (localStorage.getItem('telefon_srv_xpub') || SRV_DEFAULTS.xpub).toLowerCase()
+    return pickDefaultMailboxXpubFor(srvXpub)
+  }
+  const prefillMailbox = () => {
+    mbxOn.checked = mailboxEnabled()
+    // Show the explicit override if set; otherwise the default (so the
+    // user sees which key is actually in use, not a blank field).
+    const stored = localStorage.getItem('telefon_mailbox_x_pub')
+    mbxXpub.value = (stored !== null) ? stored : defaultMbxXpub()
+    mbxXpub.placeholder = defaultMbxXpub() || '(no default for this server)'
+  }
+  prefillMailbox()
+  mbxOn.onchange = (e) => {
+    localStorage.setItem('telefon_mailbox_enabled', e.target.checked ? '1' : '0')
+  }
+  const commitMailboxXpub = () => {
+    const v = mbxXpub.value.trim().toLowerCase()
+    const def = defaultMbxXpub()
+    if (v === '' || v === def) {
+      // Either explicitly empty (disable) or matches the default → clear
+      // override so we transparently follow MAILBOX_DEFAULTS in future.
+      localStorage.removeItem('telefon_mailbox_x_pub')
+    } else if (/^[0-9a-f]{64}$/.test(v)) {
+      localStorage.setItem('telefon_mailbox_x_pub', v)
+    } else {
+      // Invalid hex: revert input to the previous effective value, no save.
+      mbxXpub.value = mailboxXpubHex()
+      try { lui.toast('Mailbox pubkey must be 64 hex characters') } catch {}
+      return
+    }
+    mailboxIntroduced = false   // re-INTRO on next use, in case keys changed
+  }
+  mbxXpub.onblur = commitMailboxXpub
+  mbxXpub.onkeydown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); mbxXpub.blur() }
+  }
+  mbxReset.onclick = () => {
+    localStorage.removeItem('telefon_mailbox_x_pub')
+    mailboxIntroduced = false
+    prefillMailbox()
+  }
 
   // ── Update ──
   q('#set-update').onclick = async () => {
