@@ -706,6 +706,21 @@ html[data-theme="dark"] .msg.me    { background: rgba(255,98,0,.14); }
 .win-body .inline-edit:hover, .win-body .inline-edit:focus-visible {
   border-bottom-color: var(--accent); outline: none;
 }
+/* Long-field editor (lui.win modal). Used for ws server URL and mailbox
+   pubkey — values long enough that an inline-input mangles the layout and
+   one stray keystroke wipes them irrecoverably. */
+.win-body .long-field-edit { display: flex; flex-direction: column; gap: 8px; }
+.win-body .long-field-edit > textarea.input {
+  width: 100%; min-height: 4em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .92rem; line-height: 1.35; resize: vertical;
+}
+.win-body .lfe-help  { font-size: .85rem; word-break: break-all; }
+.win-body .lfe-error { color: var(--danger, #c0392b); font-size: .9rem; }
+.win-body .lfe-buttons {
+  display: flex; align-items: center; gap: 8px; margin-top: 4px;
+}
+.win-body .lfe-spacer { flex: 1; }
+
 .win-body .set-adv { margin-top: 12px; }
 .win-body .set-adv > summary { cursor: pointer; color: var(--ink-soft); font-size: .9rem; }
 .win-body .set-adv > label { display: block; margin: 10px 0 4px; font-size: .85rem; }
