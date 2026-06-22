@@ -16,6 +16,13 @@
 //!                                   lines instead of reading stdin
 //!   WS_URL                          default wss://telefon.lleo.me/ws
 //!   WSCHAT_SERVER_X_PUB / _ED_PUB   default telefon.lleo.me server keys
+//!   WSCHAT_MAILBOX_X_PUB            mailbox X25519 pubkey (hex32). If set and
+//!                                   non-empty, offline messages are STORE'd
+//!                                   in the mailbox; on connect we FETCH_NEXT
+//!                                   until empty. See ws_mailbox/doc/PROTOCOL.md.
+//!   WSCHAT_MAILBOX_ED_PUB           mailbox Ed25519 pubkey (hex32). Required
+//!                                   together with WSCHAT_MAILBOX_X_PUB to
+//!                                   verify mailbox-side response signatures.
 //!
 //! Modes:
 //!   wschat keygen   print fresh seeds + your "K0..." invite, then exit
@@ -54,6 +61,19 @@ const CMD_PEER_ONLINE: u8 = 0x42;
 const CMD_PEER_OFFLINE: u8 = 0x43;
 const CMD_INTRODUCE: u8 = 0x46;
 const CMD_WAKE: u8 = 0x48;
+
+// Mailbox op-codes. These ride as the `cmd` byte of peer-frames addressed to
+// the mailbox (no extra op byte in the body). See ws_mailbox/doc/PROTOCOL.md.
+const MBX_STORE: u8 = 0x01;
+const MBX_FETCH_NEXT: u8 = 0x02;
+const MBX_DELETE: u8 = 0x03;
+const MBX_DELIVERY: u8 = 0x10;
+const MBX_EMPTY: u8 = 0x11;
+const MBX_TOO_BIG: u8 = 0x12;
+const MBX_MAILBOX_FULL: u8 = 0x13;
+const MBX_STORED: u8 = 0x14;
+const MBX_DELETED: u8 = 0x15;
+const MBX_NOT_FOUND: u8 = 0x16;
 
 const DEFAULT_SERVER_X_PUB: &str =
     "4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06";
@@ -152,6 +172,93 @@ fn verify_and_decrypt(packet: &[u8], my_x_priv: &[u8; 32], their_x_pub: &[u8; 32
     aead_decrypt(&shared, nonce, ct)
 }
 
+/// Encrypt+sign a payload using a caller-supplied nonce (so a later DELETE can
+/// reproduce the exact same ciphertext byte-for-byte — XChaCha20-Poly1305 is
+/// deterministic given key/nonce/plaintext). Mirror of `encrypt_and_sign`.
+fn encrypt_and_sign_with_nonce(
+    plain: &[u8],
+    nonce: &[u8; 24],
+    my_x_priv: &[u8; 32],
+    my_ed: &SigningKey,
+    their_x_pub: &[u8; 32],
+) -> Vec<u8> {
+    let shared = x25519(*my_x_priv, *their_x_pub);
+    let ct = aead_encrypt(&shared, nonce, plain);
+    let mut packet = Vec::with_capacity(24 + ct.len() + 64);
+    packet.extend_from_slice(nonce);
+    packet.extend_from_slice(&ct);
+    let sig = my_ed.sign(&packet).to_bytes();
+    packet.extend_from_slice(&sig);
+    packet
+}
+
+/// Build a self-contained mailbox envelope addressed to a real recipient.
+/// Wire: `[sender_x_pub:32][nonce:24][ct][sig:64]`.
+///
+/// The mailbox stores this verbatim; the recipient later receives it inside a
+/// DELIVERY response and can identify the sender from the open `sender_x_pub`
+/// prefix (no relay-side XOR header is restorable outside of a live route).
+///
+/// Returns `(envelope, nonce)`; persist the nonce so a later DELETE can rebuild
+/// byte-identical ciphertext for `blake3(sender_id || ciphertext)` matching.
+fn build_mailbox_envelope(
+    me: &Identity,
+    recipient_x_pub: &[u8; 32],
+    msg_id: u16,
+    cmd: u8,
+    body: &[u8],
+) -> (Vec<u8>, [u8; 24]) {
+    let inner = pack_inner(msg_id, cmd, body);
+    let nonce = fresh_nonce_24();
+    let packet = encrypt_and_sign_with_nonce(&inner, &nonce, &me.x_priv, &me.ed, recipient_x_pub);
+    let mut env = Vec::with_capacity(32 + packet.len());
+    env.extend_from_slice(&me.x_pub);
+    env.extend_from_slice(&packet);
+    (env, nonce)
+}
+
+/// Re-build a mailbox envelope with a stored nonce, so the ciphertext matches
+/// a prior STORE byte-for-byte (used by DELETE to hit the mailbox's
+/// `blake3(sender_id || ciphertext)` lookup).
+fn rebuild_mailbox_envelope(
+    me: &Identity,
+    recipient_x_pub: &[u8; 32],
+    msg_id: u16,
+    cmd: u8,
+    body: &[u8],
+    nonce: &[u8; 24],
+) -> Vec<u8> {
+    let inner = pack_inner(msg_id, cmd, body);
+    let packet = encrypt_and_sign_with_nonce(&inner, nonce, &me.x_priv, &me.ed, recipient_x_pub);
+    let mut env = Vec::with_capacity(32 + packet.len());
+    env.extend_from_slice(&me.x_pub);
+    env.extend_from_slice(&packet);
+    env
+}
+
+/// Parse a mailbox envelope received inside a DELIVERY frame. Returns the
+/// inner payload `[msg_id:2][cmd:1][body]` plus the sender's 8-byte ClientId
+/// (derived from the open `sender_x_pub` prefix).
+///
+/// Caller must look up the sender in its address book to verify the Ed25519
+/// signature. For the wschat single-peer bridge we just check the sender's
+/// x_pub matches our known peer; mismatches are silently dropped.
+fn parse_mailbox_envelope(
+    env: &[u8],
+    my_x_priv: &[u8; 32],
+    expected_sender_x_pub: &[u8; 32],
+    expected_sender_ed: &VerifyingKey,
+) -> Option<Vec<u8>> {
+    if env.len() < 32 + 24 + 16 + 64 {
+        return None;
+    }
+    let sender_x_pub: [u8; 32] = env[..32].try_into().ok()?;
+    if &sender_x_pub != expected_sender_x_pub {
+        return None;
+    }
+    verify_and_decrypt(&env[32..], my_x_priv, expected_sender_x_pub, expected_sender_ed)
+}
+
 fn build_handshake_request(me: &Identity, server_x_pub: &[u8; 32]) -> Vec<u8> {
     let mut body = Vec::with_capacity(33);
     body.extend_from_slice(me.ed_pub.as_bytes());
@@ -205,11 +312,26 @@ struct Peer {
     nick: String,
 }
 
+/// The mailbox sidecar (offline message cache). One ws_mailbox instance lives
+/// next to each ws_server; pubkeys are endpoint-specific (see protocol doc).
+/// `id` is the first 8 bytes of `x_pub`, used as the routing ClientId.
+struct Mailbox {
+    x_pub: [u8; 32],
+    ed_pub: VerifyingKey,
+    id: [u8; 8],
+}
+
 /// An outgoing message in the local outbox. Kept until the peer's
 /// delivery-ack arrives; re-sent when the peer comes online.
+///
+/// `mailbox_nonce` is set after a successful STORE: it's the 24-byte XChaCha20
+/// nonce used to build the envelope. Presence of a nonce means "still in the
+/// mailbox, not confirmed by recipient"; a later DELIVERY_ACK from the peer
+/// clears it (and would let a DELETE rebuild byte-identical ciphertext).
 struct OutMsg {
     text: String,
     delivered: bool,
+    mailbox_nonce: Option<[u8; 24]>,
 }
 
 /// An outgoing file in the local outbox. Kept until the peer's delivery-ack
@@ -391,6 +513,171 @@ impl InboxJournal {
     }
 }
 
+/// Mailbox per-session state: tracks whether we've INTRODUCE'd (once per
+/// session, reset on reconnect) and the FIFO of STORE/DELETE requests
+/// waiting for a response. The mailbox replies in order, so we match
+/// responses to requests by popping the oldest pending msgid.
+struct MailboxState {
+    introduced: bool,
+    pending_store: VecDeque<[u8; 16]>,
+    pending_delete: VecDeque<[u8; 16]>,
+}
+
+impl MailboxState {
+    fn new() -> Self {
+        Self {
+            introduced: false,
+            pending_store: VecDeque::new(),
+            pending_delete: VecDeque::new(),
+        }
+    }
+}
+
+/// Send a peer-frame to the mailbox carrying STORE/FETCH_NEXT/DELETE.
+/// Bumps `seq`. For STORE/DELETE, body is `[recipient_pub:32][envelope]`;
+/// for FETCH_NEXT, body is empty.
+async fn mailbox_send_op(
+    op: u8,
+    body: &[u8],
+    me: &Identity,
+    mailbox: &Mailbox,
+    k_c2s: &[u8; 32],
+    ws: &mut Ws,
+    seq: &mut u16,
+) -> bool {
+    let frame = build_peer_frame(me, &mailbox.x_pub, &mailbox.id, k_c2s,
+        &pack_inner(*seq, op, body));
+    *seq = seq.wrapping_add(1);
+    ws.send(Message::Binary(frame)).await.is_ok()
+}
+
+/// Ensure the mailbox has been INTRODUCE'd in this session. The mailbox needs
+/// our `sender_x_pub` in its address book to decrypt our outer peer-frames;
+/// without INTRO, our STOREs are silently dropped.
+async fn mailbox_ensure_intro(
+    me: &Identity,
+    mailbox: &Mailbox,
+    nick: &str,
+    k_c2s: &[u8; 32],
+    server_x_pub: &[u8; 32],
+    ws: &mut Ws,
+    seq: &mut u16,
+    state: &mut MailboxState,
+) {
+    if state.introduced {
+        return;
+    }
+    let mut body = Vec::with_capacity(8 + nick.len());
+    body.extend_from_slice(&mailbox.id);
+    body.extend_from_slice(nick.as_bytes());
+    let frame = build_server_bound(me, server_x_pub, k_c2s,
+        &pack_inner(*seq, CMD_INTRODUCE, &body));
+    *seq = seq.wrapping_add(1);
+    let _ = ws.send(Message::Binary(frame)).await;
+    state.introduced = true;
+}
+
+/// STORE a TEXT message in the mailbox so an offline recipient receives it on
+/// their next FETCH cycle. Inserts the resulting 24-byte nonce into `sent` so
+/// a DELETE/cancel could later rebuild byte-identical ciphertext. Fires on top
+/// of the normal peer-send (not instead of it): mailbox is an extra safety net
+/// for the offline case.
+async fn mailbox_store_text(
+    msgid: &[u8; 16],
+    text: &str,
+    me: &Identity,
+    peer: &Peer,
+    mailbox: &Mailbox,
+    nick: &str,
+    k_c2s: &[u8; 32],
+    server_x_pub: &[u8; 32],
+    ws: &mut Ws,
+    seq: &mut u16,
+    sent: &mut IndexMap<[u8; 16], OutMsg>,
+    state: &mut MailboxState,
+) {
+    mailbox_ensure_intro(me, mailbox, nick, k_c2s, server_x_pub, ws, seq, state).await;
+
+    // Inner body shape matches a live TEXT peer frame: [msg_id:16][utf-8 text].
+    let mut inner_body = Vec::with_capacity(16 + text.len());
+    inner_body.extend_from_slice(msgid);
+    inner_body.extend_from_slice(text.as_bytes());
+
+    let (env, nonce) = build_mailbox_envelope(me, &peer.x_pub, *seq, CMD_TEXT, &inner_body);
+    *seq = seq.wrapping_add(1);
+
+    // STORE body: [real_recipient_pub:32][envelope].
+    let mut store_body = Vec::with_capacity(32 + env.len());
+    store_body.extend_from_slice(&peer.x_pub);
+    store_body.extend_from_slice(&env);
+
+    if mailbox_send_op(MBX_STORE, &store_body, me, mailbox, k_c2s, ws, seq).await {
+        // Tentatively remember the nonce: confirmed by STORED response, cleared
+        // by TOO_BIG / MAILBOX_FULL. We track pending STORE in FIFO so the next
+        // mailbox response binds to this msgid.
+        if let Some(m) = sent.get_mut(msgid) {
+            m.mailbox_nonce = Some(nonce);
+        }
+        state.pending_store.push_back(*msgid);
+        eprintln!("[wschat] mailbox: STORE sent for {}", hex::encode(msgid));
+    }
+}
+
+/// Send a FETCH_NEXT to pull one queued message from the mailbox. The reply
+/// loop (in `handle_mailbox_response`) re-arms itself by calling this again
+/// on each DELIVERY until the mailbox answers EMPTY.
+async fn mailbox_fetch_next(
+    me: &Identity,
+    mailbox: &Mailbox,
+    nick: &str,
+    k_c2s: &[u8; 32],
+    server_x_pub: &[u8; 32],
+    ws: &mut Ws,
+    seq: &mut u16,
+    state: &mut MailboxState,
+) {
+    mailbox_ensure_intro(me, mailbox, nick, k_c2s, server_x_pub, ws, seq, state).await;
+    let _ = mailbox_send_op(MBX_FETCH_NEXT, &[], me, mailbox, k_c2s, ws, seq).await;
+}
+
+/// DELETE a previously-STORE'd message. Reconstructs byte-identical ciphertext
+/// from the saved nonce so the mailbox's `blake3(sender_id || ct)` lookup
+/// matches the original STORE. Currently unused by the wschat CLI (no cancel
+/// UI), but kept for symmetry and future use; suppress unused-fn warning.
+#[allow(dead_code)]
+async fn mailbox_delete_text(
+    msgid: &[u8; 16],
+    text: &str,
+    nonce: &[u8; 24],
+    me: &Identity,
+    peer: &Peer,
+    mailbox: &Mailbox,
+    nick: &str,
+    k_c2s: &[u8; 32],
+    server_x_pub: &[u8; 32],
+    ws: &mut Ws,
+    seq: &mut u16,
+    state: &mut MailboxState,
+) {
+    mailbox_ensure_intro(me, mailbox, nick, k_c2s, server_x_pub, ws, seq, state).await;
+
+    let mut inner_body = Vec::with_capacity(16 + text.len());
+    inner_body.extend_from_slice(msgid);
+    inner_body.extend_from_slice(text.as_bytes());
+
+    let env = rebuild_mailbox_envelope(me, &peer.x_pub, *seq, CMD_TEXT, &inner_body, nonce);
+    *seq = seq.wrapping_add(1);
+
+    let mut del_body = Vec::with_capacity(32 + env.len());
+    del_body.extend_from_slice(&peer.x_pub);
+    del_body.extend_from_slice(&env);
+
+    if mailbox_send_op(MBX_DELETE, &del_body, me, mailbox, k_c2s, ws, seq).await {
+        state.pending_delete.push_back(*msgid);
+        eprintln!("[wschat] mailbox: DELETE sent for {}", hex::encode(msgid));
+    }
+}
+
 /// Send a CMD_READ_ACK for the given msgid over the peer link, bumping seq.
 async fn send_read_ack(
     msgid: &[u8; 16],
@@ -418,6 +705,36 @@ fn decode_qr(qr: &str) -> anyhow::Result<Peer> {
     id.copy_from_slice(&x_pub[..8]);
     let nick = String::from_utf8_lossy(&raw[64..]).to_string();
     Ok(Peer { x_pub, ed_pub, id, nick })
+}
+
+/// Parse mailbox identity from env. Returns Some(Mailbox) only when BOTH
+/// X and Ed pubkeys are present, non-empty, and valid hex32. Any other state
+/// (unset, empty, malformed) disables the mailbox feature — wschat then
+/// works as before (outbox + presence only).
+fn mailbox_from_env() -> Option<Mailbox> {
+    let x_hex = env::var("WSCHAT_MAILBOX_X_PUB").ok()?;
+    let ed_hex = env::var("WSCHAT_MAILBOX_ED_PUB").ok()?;
+    if x_hex.is_empty() || ed_hex.is_empty() {
+        return None;
+    }
+    let x_raw = hex::decode(&x_hex).ok()?;
+    let ed_raw = hex::decode(&ed_hex).ok()?;
+    if x_raw.len() != 32 || ed_raw.len() != 32 {
+        eprintln!("[wschat] mailbox: bad pubkey length, disabled");
+        return None;
+    }
+    let x_pub: [u8; 32] = x_raw.try_into().ok()?;
+    let ed_arr: [u8; 32] = ed_raw.try_into().ok()?;
+    let ed_pub = match VerifyingKey::from_bytes(&ed_arr) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[wschat] mailbox: bad ed_pub: {e}; disabled");
+            return None;
+        }
+    };
+    let mut id = [0u8; 8];
+    id.copy_from_slice(&x_pub[..8]);
+    Some(Mailbox { x_pub, ed_pub, id })
 }
 
 fn make_qr(me: &Identity, nick: &str) -> String {
@@ -477,9 +794,15 @@ async fn main() -> anyhow::Result<()> {
     let ws_url = env_or("WS_URL", DEFAULT_WS_URL);
     let watch = env::var("WSCHAT_WATCH").ok();
     let inbox_path = env::var("WSCHAT_INBOX").ok();
+    let mailbox = mailbox_from_env();
 
     eprintln!("[wschat] me={} nick={} → peer={} ({})", hex::encode(me.id), nick, hex::encode(peer.id), peer.nick);
     eprintln!("[wschat] my invite: {}", make_qr(&me, &nick));
+    if let Some(m) = &mailbox {
+        eprintln!("[wschat] mailbox enabled: id={}", hex::encode(m.id));
+    } else {
+        eprintln!("[wschat] mailbox disabled (set WSCHAT_MAILBOX_X_PUB / _ED_PUB to enable)");
+    }
 
     let shared_with_server = x25519(me.x_priv, server_x_pub);
     let (k_c2s, k_s2c) = derive_session(&shared_with_server);
@@ -508,7 +831,17 @@ async fn main() -> anyhow::Result<()> {
         j
     });
 
+    // Mailbox per-session state. Reset on every (re)connect inside the loop
+    // (introduced flag must re-fire, pending queues drop stale entries).
+    let mut mailbox_state = MailboxState::new();
+
     'reconnect: loop {
+        // Reset mailbox session state on every (re)connect. INTRO must fire
+        // again (relay tells the mailbox who we are anew); old pending entries
+        // are stale (the mailbox has no memory of them on its side either —
+        // any in-flight STORE/DELETE responses were lost on disconnect).
+        mailbox_state = MailboxState::new();
+
         // (Re)connect + handshake. On any failure, wait and retry — the
         // bridge must survive relay restarts / network blips, otherwise it
         // silently dies and messages are lost.
@@ -556,6 +889,14 @@ async fn main() -> anyhow::Result<()> {
         // Peer may already be online — try to flush any pending outbox now.
         flush_outbox(&me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, &mut file_sent).await;
 
+        // If a mailbox is configured, INTRO + drain it: peers may have stored
+        // messages for us while we were offline. The fetch loop continues
+        // inside handle_incoming (every DELIVERY re-arms a FETCH_NEXT) until
+        // the mailbox answers EMPTY.
+        if let Some(m) = &mailbox {
+            mailbox_fetch_next(&me, m, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut mailbox_state).await;
+        }
+
         let mut poll = tokio::time::interval(Duration::from_millis(500));
         // Liveness: the server emits a frame (binary, WS-ping, or plain-text "ping")
         // at least every ~20s. If we see NOTHING for >50s the socket has silently
@@ -574,7 +915,7 @@ async fn main() -> anyhow::Result<()> {
                     if matches!(msg, Some(Ok(_))) { last_rx = std::time::Instant::now(); }
                     match msg {
                         Some(Ok(Message::Binary(b))) => {
-                            handle_incoming(&b, &me, &peer, &nick, &k_s2c, &k_c2s, &server_x_pub, &server_ed_vk, &mut ws, &mut seq, &mut sent, &mut file_sent, &mut peer_online, &mut in_files, &files_dir, &mut inbox).await;
+                            handle_incoming(&b, &me, &peer, &nick, &k_s2c, &k_c2s, &server_x_pub, &server_ed_vk, &mut ws, &mut seq, &mut sent, &mut file_sent, &mut peer_online, &mut in_files, &files_dir, &mut inbox, mailbox.as_ref(), &mut mailbox_state).await;
                         }
                         Some(Ok(Message::Text(t))) => {
                             // Server's plain-text keepalive; reply "pong". Any received
@@ -603,7 +944,7 @@ async fn main() -> anyhow::Result<()> {
                             } else if let Some(path) = parse_file_marker(&text) {
                                 send_file(path, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut file_sent, peer_online).await;
                             } else {
-                                send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, peer_online).await;
+                                send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, peer_online, mailbox.as_ref(), &mut mailbox_state).await;
                             }
                         }
                         Ok(Some(_)) => {}
@@ -624,7 +965,7 @@ async fn main() -> anyhow::Result<()> {
                                 } else if let Some(fpath) = parse_file_marker(&text) {
                                     send_file(fpath, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut file_sent, peer_online).await;
                                 } else {
-                                    send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, peer_online).await;
+                                    send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, peer_online, mailbox.as_ref(), &mut mailbox_state).await;
                                 }
                             }
                         }
@@ -721,6 +1062,8 @@ async fn send_text(
     seq: &mut u16,
     sent: &mut IndexMap<[u8; 16], OutMsg>,
     peer_online: bool,
+    mailbox: Option<&Mailbox>,
+    mailbox_state: &mut MailboxState,
 ) {
     // Re-introduce (with name) so an offline-then-online peer still gets our keys.
     let _ = ws.send(Message::Binary(build_introduce(me, peer, nick, k_c2s, server_x_pub, *seq))).await;
@@ -731,7 +1074,7 @@ async fn send_text(
     // Record in the outbox BEFORE sending — if the peer is offline the send
     // still "succeeds" into the socket but no delivery-ack returns, so it
     // stays pending and gets re-sent on PEER_ONLINE.
-    sent.insert(uuid, OutMsg { text: text.to_string(), delivered: false });
+    sent.insert(uuid, OutMsg { text: text.to_string(), delivered: false, mailbox_nonce: None });
     let frame = build_text_frame(me, peer, k_c2s, &uuid, text);
     let _ = ws.send(Message::Binary(frame)).await;
 
@@ -746,6 +1089,16 @@ async fn send_text(
         let wframe = build_server_bound(me, server_x_pub, k_c2s, &pack_inner(*seq, CMD_WAKE, &wbody));
         let _ = ws.send(Message::Binary(wframe)).await;
         *seq = seq.wrapping_add(1);
+
+        // Drop a copy in the mailbox so the message survives the offline gap
+        // even if the wake push fails (peer's app killed, doze mode, no token).
+        // The live peer-frame above still fires too: when the peer comes back,
+        // either path delivers and the other becomes a harmless duplicate
+        // (deduped by msg_id on the receiver).
+        if let Some(m) = mailbox {
+            mailbox_store_text(&uuid, text, me, peer, m, nick, k_c2s, server_x_pub,
+                ws, seq, sent, mailbox_state).await;
+        }
     }
 }
 
@@ -827,6 +1180,8 @@ async fn handle_incoming(
     in_files: &mut IndexMap<[u8; 16], InFile>,
     files_dir: &Option<String>,
     inbox: &mut Option<InboxJournal>,
+    mailbox: Option<&Mailbox>,
+    mailbox_state: &mut MailboxState,
 ) {
     use std::io::Write;
     if frame.len() < 8 + 24 + 16 + 64 {
@@ -850,6 +1205,25 @@ async fn handle_incoming(
             }
         }
         return;
+    }
+
+    // Mailbox response? Header matches the mailbox's ClientId. The peer-frame
+    // is encrypted with the mailbox's keypair (NOT the peer's), so we decrypt
+    // and verify against the mailbox's pubkeys.
+    if let Some(m) = mailbox {
+        if header == m.id {
+            if let Some(inner) = verify_and_decrypt(&frame[8..], &me.x_priv, &m.x_pub, &m.ed_pub) {
+                if inner.len() >= 3 {
+                    handle_mailbox_response(
+                        inner[2], &inner[3..],
+                        me, peer, nick, k_s2c, k_c2s, server_x_pub, server_ed_vk,
+                        m, ws, seq, sent, file_sent, peer_online,
+                        in_files, files_dir, inbox, mailbox_state,
+                    ).await;
+                }
+            }
+            return;
+        }
     }
 
     // Peer frame. We only know one peer.
@@ -897,7 +1271,13 @@ async fn handle_incoming(
         }
     } else if cmd == CMD_DELIVERY_ACK && body.len() >= 16 {
         let id: [u8; 16] = body[..16].try_into().unwrap();
-        if let Some(m) = sent.get_mut(&id) { m.delivered = true; }
+        if let Some(m) = sent.get_mut(&id) {
+            m.delivered = true;
+            // Recipient picked the message up either live or out of the
+            // mailbox. Either way, drop the stored nonce: it served as the
+            // "still pending in mailbox" flag and is no longer needed.
+            m.mailbox_nonce = None;
+        }
         // The ack id is the 16-byte msg id; for files it keys file_sent by mid.
         if let Some(f) = file_sent.get_mut(&id) {
             f.delivered = true;
