@@ -833,7 +833,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Mailbox per-session state. Reset on every (re)connect inside the loop
     // (introduced flag must re-fire, pending queues drop stale entries).
-    let mut mailbox_state = MailboxState::new();
+    let mut mailbox_state: MailboxState;
 
     'reconnect: loop {
         // Reset mailbox session state on every (re)connect. INTRO must fire
@@ -1183,7 +1183,6 @@ async fn handle_incoming(
     mailbox: Option<&Mailbox>,
     mailbox_state: &mut MailboxState,
 ) {
-    use std::io::Write;
     if frame.len() < 8 + 24 + 16 + 64 {
         return;
     }
@@ -1230,6 +1229,30 @@ async fn handle_incoming(
     let Some(inner) = verify_and_decrypt(&frame[8..], &me.x_priv, &peer.x_pub, &peer.ed_pub) else {
         return;
     };
+    process_peer_inner(
+        &inner, me, peer, k_c2s, ws, seq, sent, file_sent,
+        in_files, files_dir, inbox,
+    ).await;
+}
+
+/// Process the decrypted inner payload `[msg_id:2][cmd:1][body]` of a peer
+/// frame. Extracted from `handle_incoming` so the same logic is reused for
+/// mailbox-delivered messages (which arrive inside an envelope but, once
+/// unwrapped, look identical to a live peer-frame's inner payload).
+async fn process_peer_inner(
+    inner: &[u8],
+    me: &Identity,
+    peer: &Peer,
+    k_c2s: &[u8; 32],
+    ws: &mut Ws,
+    seq: &mut u16,
+    sent: &mut IndexMap<[u8; 16], OutMsg>,
+    file_sent: &mut IndexMap<[u8; 16], FileOut>,
+    in_files: &mut IndexMap<[u8; 16], InFile>,
+    files_dir: &Option<String>,
+    inbox: &mut Option<InboxJournal>,
+) {
+    use std::io::Write;
     if inner.len() < 3 {
         return;
     }
@@ -1368,6 +1391,106 @@ async fn handle_incoming(
                 *seq = seq.wrapping_add(1);
                 let _ = ws.send(Message::Binary(ack)).await;
             }
+        }
+    }
+}
+
+/// Handle a peer-frame whose sender is the configured mailbox. The mailbox
+/// op-code rides in the `cmd` byte (STORE etc. for client->mailbox, DELIVERY
+/// etc. for mailbox->client); body shape depends on op.
+///
+/// STORED / TOO_BIG / MAILBOX_FULL carry no msg_id — we resolve them to the
+/// oldest entry in `pending_store` (FIFO matches the order we sent STOREs).
+/// Same for DELETED / NOT_FOUND against `pending_delete`. DELIVERY contains a
+/// self-contained envelope: parse it, then feed the inner payload through the
+/// normal peer-frame dispatcher so TEXT / FILE_* / etc. just work. After each
+/// DELIVERY we re-arm a FETCH_NEXT until the mailbox answers EMPTY.
+async fn handle_mailbox_response(
+    op: u8,
+    body: &[u8],
+    me: &Identity,
+    peer: &Peer,
+    nick: &str,
+    _k_s2c: &[u8; 32],
+    k_c2s: &[u8; 32],
+    server_x_pub: &[u8; 32],
+    _server_ed_vk: &VerifyingKey,
+    mailbox: &Mailbox,
+    ws: &mut Ws,
+    seq: &mut u16,
+    sent: &mut IndexMap<[u8; 16], OutMsg>,
+    file_sent: &mut IndexMap<[u8; 16], FileOut>,
+    _peer_online: &mut bool,
+    in_files: &mut IndexMap<[u8; 16], InFile>,
+    files_dir: &Option<String>,
+    inbox: &mut Option<InboxJournal>,
+    state: &mut MailboxState,
+) {
+    match op {
+        MBX_STORED => {
+            if let Some(msgid) = state.pending_store.pop_front() {
+                eprintln!("[wschat] mailbox: STORED {}", hex::encode(msgid));
+            }
+        }
+        MBX_TOO_BIG => {
+            if let Some(msgid) = state.pending_store.pop_front() {
+                eprintln!("[wschat] mailbox: TOO_BIG for {} (message too large for offline cache)",
+                    hex::encode(msgid));
+                // Drop the tentative nonce: the blob never landed.
+                if let Some(m) = sent.get_mut(&msgid) { m.mailbox_nonce = None; }
+            }
+        }
+        MBX_MAILBOX_FULL => {
+            if let Some(msgid) = state.pending_store.pop_front() {
+                eprintln!("[wschat] mailbox: MAILBOX_FULL for {} (recipient quota exceeded)",
+                    hex::encode(msgid));
+                if let Some(m) = sent.get_mut(&msgid) { m.mailbox_nonce = None; }
+            }
+        }
+        MBX_DELETED => {
+            if let Some(msgid) = state.pending_delete.pop_front() {
+                eprintln!("[wschat] mailbox: DELETED {}", hex::encode(msgid));
+                if let Some(m) = sent.get_mut(&msgid) { m.mailbox_nonce = None; }
+            }
+        }
+        MBX_NOT_FOUND => {
+            if let Some(msgid) = state.pending_delete.pop_front() {
+                eprintln!("[wschat] mailbox: NOT_FOUND for {} (already fetched or expired)",
+                    hex::encode(msgid));
+                if let Some(m) = sent.get_mut(&msgid) { m.mailbox_nonce = None; }
+            }
+        }
+        MBX_EMPTY => {
+            eprintln!("[wschat] mailbox: EMPTY");
+        }
+        MBX_DELIVERY => {
+            // body is the self-contained envelope addressed to us. Parse +
+            // dispatch through the normal peer pipeline.
+            match parse_mailbox_envelope(body, &me.x_priv, &peer.x_pub, &peer.ed_pub) {
+                Some(inner) => {
+                    eprintln!("[wschat] mailbox: DELIVERY ({} bytes) from {}",
+                        inner.len(), hex::encode(peer.id));
+                    process_peer_inner(
+                        &inner, me, peer, k_c2s, ws, seq, sent, file_sent,
+                        in_files, files_dir, inbox,
+                    ).await;
+                }
+                None => {
+                    // Unknown sender, bad signature, or AEAD failure. For the
+                    // wschat single-peer bridge anything not from our peer is
+                    // silently dropped (could be a stale blob predating a key
+                    // rotation — TTL sweep will eventually clean it up).
+                    eprintln!("[wschat] mailbox: DELIVERY parse failed (unknown sender or bad envelope)");
+                }
+            }
+            // Keep draining: re-arm FETCH_NEXT. The loop terminates when the
+            // mailbox answers EMPTY.
+            let _ = mailbox_send_op(MBX_FETCH_NEXT, &[], me, mailbox, k_c2s, ws, seq).await;
+            // Suppress unused-var warnings for plumbing-only params.
+            let _ = (nick, server_x_pub);
+        }
+        _ => {
+            eprintln!("[wschat] mailbox: unknown op 0x{:02x}", op);
         }
     }
 }
