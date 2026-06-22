@@ -4077,6 +4077,52 @@ function deleteAllChats() {
   })()
 }
 
+// Open a modal editor for a single long-value field (URL, hex pubkey, etc).
+// Long values must NOT be edited inline in Settings: they overflow the layout
+// and one stray keystroke wipes the value with no undo. The modal gives a
+// roomy textarea, explicit Save / Cancel, and an optional Reset to default.
+function openLongFieldEditor({ title, initial, placeholder, helpText, validate, onSave, onReset }) {
+  const lui = window.lui
+  const html = `
+    <div class="long-field-edit">
+      <textarea id="lfe-input" class="input" rows="3" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+      ${helpText ? `<div class="muted lfe-help">${escapeHtml(helpText)}</div>` : ''}
+      <div id="lfe-error" class="muted lfe-error" hidden></div>
+      <div class="lfe-buttons">
+        ${onReset ? '<button id="lfe-reset" class="btn btn-ghost">Reset to default</button>' : ''}
+        <span class="lfe-spacer"></span>
+        <button id="lfe-cancel" class="btn btn-ghost">Cancel</button>
+        <button id="lfe-save" class="btn btn-primary">Save</button>
+      </div>
+    </div>`
+  const w = lui.win(title, html)
+  const q = (s) => w.querySelector(s)
+  const input = q('#lfe-input')
+  const err   = q('#lfe-error')
+  input.value = initial || ''
+  if (placeholder) input.placeholder = placeholder
+  // Focus after the window's open animation settles.
+  setTimeout(() => { input.focus(); try { input.select() } catch {} }, 0)
+
+  const close = () => lui.closeWin(w)
+  const submit = () => {
+    const v = input.value.trim()
+    if (validate) {
+      const msg = validate(v)
+      if (msg) { err.textContent = msg; err.hidden = false; return }
+    }
+    onSave(v)
+    close()
+  }
+  q('#lfe-cancel').onclick = close
+  q('#lfe-save').onclick   = submit
+  if (onReset && q('#lfe-reset')) q('#lfe-reset').onclick = () => { onReset(); close() }
+  input.onkeydown = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); close() }
+    // Enter inside a textarea is a newline; users save via the explicit button.
+  }
+}
+
 // Open the settings window. Built fresh each time so it shows current values.
 function openSettings() {
   const lui = window.lui
@@ -4145,7 +4191,6 @@ function openSettings() {
     <div class="set-line" title="${escapeHtml(t('server_hint'))}">
       <span class="set-label">${escapeHtml(t('set_server'))}</span>
       <span id="set-url-display" class="inline-edit" tabindex="0" role="button" title="${escapeHtml(t('tap_to_edit'))}"></span>
-      <input id="set-url" class="input" type="text" data-nopersist hidden />
     </div>
 
     <div class="set-sec">
@@ -4159,11 +4204,7 @@ function openSettings() {
       </div>
       <div class="set-line">
         <span class="set-label">Mailbox pubkey</span>
-        <input id="set-mailbox-xpub" class="input" type="text" data-nopersist placeholder="64 hex chars" />
-      </div>
-      <div class="set-line">
-        <span class="set-label"></span>
-        <button id="set-mailbox-reset" class="btn btn-ghost">Reset to default</button>
+        <span id="set-mailbox-display" class="inline-edit" tabindex="0" role="button" title="${escapeHtml(t('tap_to_edit'))}"></span>
       </div>
     </div>
 
@@ -4279,90 +4320,88 @@ function openSettings() {
     setTimeout(() => location.reload(), 800)
   }
 
-  // URL — shown as text with a pencil; empty field uses the default (its
-  // placeholder shows exactly what that default is).
+  // URL — shown as a single line of summary text; click opens a modal with
+  // a full-width editor + Save/Cancel/Reset. Inline editing is a footgun
+  // for long values (accidental keystrokes wipe carefully-typed keys with
+  // no undo), so all long-value Settings fields use this modal pattern.
   const urlDisplay = q('#set-url-display')
-  const urlInput   = q('#set-url')
-  urlInput.placeholder = dUrl
   const effectiveUrl = () => (localStorage.getItem('telefon_ws_url') || dUrl)
-  const showUrlText = () => {
-    urlDisplay.textContent = effectiveUrl()
-    urlDisplay.hidden = false
-    urlInput.hidden = true
-  }
-  const editUrl = () => {
-    urlInput.value = localStorage.getItem('telefon_ws_url') || ''  // empty → placeholder=default
-    urlDisplay.hidden = true
-    urlInput.hidden = false
-    urlInput.focus(); try { urlInput.select() } catch {}
-  }
-  const commitUrl = () => {
-    const before = effectiveUrl()
-    const v = urlInput.value.trim()
-    if (v && v !== dUrl) localStorage.setItem('telefon_ws_url', v)
-    else                 localStorage.removeItem('telefon_ws_url')   // empty/default → use default
-    showUrlText()
-    if (effectiveUrl() !== before) reconnectNow()
-  }
+  const showUrlText = () => { urlDisplay.textContent = effectiveUrl() }
+  const editUrl = () => openLongFieldEditor({
+    title: t('set_server'),
+    initial: localStorage.getItem('telefon_ws_url') || '',
+    placeholder: dUrl,
+    helpText: `Default: ${dUrl}`,
+    onSave: (raw) => {
+      const before = effectiveUrl()
+      const v = (raw || '').trim()
+      if (v && v !== dUrl) localStorage.setItem('telefon_ws_url', v)
+      else                 localStorage.removeItem('telefon_ws_url')
+      showUrlText()
+      if (effectiveUrl() !== before) reconnectNow()
+    },
+    onReset: () => {
+      const before = effectiveUrl()
+      localStorage.removeItem('telefon_ws_url')
+      showUrlText()
+      if (effectiveUrl() !== before) reconnectNow()
+    },
+  })
   urlDisplay.onclick = editUrl
   urlDisplay.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); editUrl() } }
-  urlInput.onblur = commitUrl
-  urlInput.onkeydown = (e) => {
-    if (e.key === 'Enter')       { e.preventDefault(); urlInput.blur() }
-    else if (e.key === 'Escape') { e.preventDefault(); showUrlText() }
-  }
   showUrlText()
 
   // ── Mailbox ──
   // Offline cache: on/off + override the mailbox X-pubkey for the current
-  // endpoint. Empty pubkey == feature off (defensive: even if the flag is
-  // checked, no mailbox to talk to means nothing happens). Pubkey is shown
-  // unmasked — it is public material, not a secret.
-  const mbxOn   = q('#set-mailbox-on')
-  const mbxXpub = q('#set-mailbox-xpub')
-  const mbxReset = q('#set-mailbox-reset')
+  // endpoint. Pubkey is shown unmasked (public material, not a secret) but
+  // edited in a modal — same reasoning as URL above.
+  const mbxOn      = q('#set-mailbox-on')
+  const mbxDisplay = q('#set-mailbox-display')
   const defaultMbxXpub = () => {
     const srvXpub = (localStorage.getItem('telefon_srv_xpub') || SRV_DEFAULTS.xpub).toLowerCase()
     return pickDefaultMailboxXpubFor(srvXpub)
   }
-  const prefillMailbox = () => {
-    mbxOn.checked = mailboxEnabled()
-    // Show the explicit override if set; otherwise the default (so the
-    // user sees which key is actually in use, not a blank field).
+  const effectiveMbxXpub = () => {
     const stored = localStorage.getItem('telefon_mailbox_x_pub')
-    mbxXpub.value = (stored !== null) ? stored : defaultMbxXpub()
-    mbxXpub.placeholder = defaultMbxXpub() || '(no default for this server)'
+    return (stored !== null) ? stored : defaultMbxXpub()
   }
-  prefillMailbox()
+  const truncMbx = (hex) => {
+    if (!hex) return '(none)'
+    if (hex.length <= 20) return hex
+    return hex.slice(0, 10) + '…' + hex.slice(-6)
+  }
+  const showMbxText = () => { mbxDisplay.textContent = truncMbx(effectiveMbxXpub()) }
+  showMbxText()
+  mbxOn.checked = mailboxEnabled()
   mbxOn.onchange = (e) => {
     localStorage.setItem('telefon_mailbox_enabled', e.target.checked ? '1' : '0')
   }
-  const commitMailboxXpub = () => {
-    const v = mbxXpub.value.trim().toLowerCase()
-    const def = defaultMbxXpub()
-    if (v === '' || v === def) {
-      // Either explicitly empty (disable) or matches the default → clear
-      // override so we transparently follow MAILBOX_DEFAULTS in future.
+  const editMbxXpub = () => openLongFieldEditor({
+    title: 'Mailbox pubkey',
+    initial: effectiveMbxXpub(),
+    placeholder: defaultMbxXpub() || '64 hex chars',
+    helpText: defaultMbxXpub() ? `Default: ${defaultMbxXpub()}` : '(no default for this server)',
+    validate: (v) => {
+      if (v === '') return null  // empty = clear override
+      if (!/^[0-9a-f]{64}$/i.test(v)) return 'Mailbox pubkey must be 64 hex characters'
+      return null
+    },
+    onSave: (raw) => {
+      const v = (raw || '').trim().toLowerCase()
+      const def = defaultMbxXpub()
+      if (v === '' || v === def) localStorage.removeItem('telefon_mailbox_x_pub')
+      else                       localStorage.setItem('telefon_mailbox_x_pub', v)
+      mailboxIntroduced = false
+      showMbxText()
+    },
+    onReset: () => {
       localStorage.removeItem('telefon_mailbox_x_pub')
-    } else if (/^[0-9a-f]{64}$/.test(v)) {
-      localStorage.setItem('telefon_mailbox_x_pub', v)
-    } else {
-      // Invalid hex: revert input to the previous effective value, no save.
-      mbxXpub.value = mailboxXpubHex()
-      try { lui.toast('Mailbox pubkey must be 64 hex characters') } catch {}
-      return
-    }
-    mailboxIntroduced = false   // re-INTRO on next use, in case keys changed
-  }
-  mbxXpub.onblur = commitMailboxXpub
-  mbxXpub.onkeydown = (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); mbxXpub.blur() }
-  }
-  mbxReset.onclick = () => {
-    localStorage.removeItem('telefon_mailbox_x_pub')
-    mailboxIntroduced = false
-    prefillMailbox()
-  }
+      mailboxIntroduced = false
+      showMbxText()
+    },
+  })
+  mbxDisplay.onclick = editMbxXpub
+  mbxDisplay.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); editMbxXpub() } }
 
   // ── Update ──
   q('#set-update').onclick = async () => {
