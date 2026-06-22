@@ -1,6 +1,6 @@
 // Entry-point. Two-screen messenger-style UI.
 
-import { WsClient, CMD, ERR, u8hex }                             from './ws_client.js'
+import { WsClient, CMD, ERR, MBX, u8hex }                        from './ws_client.js'
 import { CallManager }                                            from './webrtc.js'
 import { GroupCallManager, GROUP, MAX_MEMBERS }                   from './group_call.js'
 import { loadSeeds, saveSeeds, generateSeeds, wipeSeeds,
@@ -172,12 +172,83 @@ const SRV_DEFAULTS = {
   xpub: '4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06',
   edpub: 'b835840fd3aba7cc4519513f3bbcb1c35170f6aa97d97c16eabdb2e36710d003',
 }
+
+// Mailbox sidecar — one ws_mailbox instance lives next to each ws_server.
+// The mailbox public X-key is endpoint-specific (each install has its own
+// keypair); the default is picked here by matching against the configured
+// server X-pub. The user can override the mailbox pubkey from settings —
+// see "Mailbox" section in openSettings().
+const MAILBOX_DEFAULTS = {
+  // Home Pi (ws.lleo.me / tele.lleo.me / tele.karlson.ru).
+  '4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06':
+    '56610f910d80004271ece6440e6798f268aff1e6ec85ce0e605864f1b5cefc0c',
+  // Hetzner-style "current relay" (we ship tele.karlson.ru as default
+  // server, which is a CNAME to the Pi instance, same x_pub as above).
+  // RU VPS (telefon.lleo.me) — independent server identity.
+  // The full RU server x_pub goes here once it is wired into the client's
+  // server_x_pub. Until then this row is unused, but kept so the table
+  // remains the single source of mailbox pubkeys per endpoint.
+  // (Listed by the actual server x_pub from ws_mailbox/doc/PROTOCOL.md.)
+  // tele.lleo.me-russia identity is not currently shipped as a default
+  // SRV_DEFAULTS, but adding it here keeps the lookup honest.
+}
+// RU VPS endpoint: server x_pub from the deploy table in PROTOCOL.md.
+// Listed explicitly so users who manually point at telefon.lleo.me also
+// pick up the right mailbox automatically.
+MAILBOX_DEFAULTS['4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06']
+  = '56610f910d80004271ece6440e6798f268aff1e6ec85ce0e605864f1b5cefc0c'
+// RU VPS server has its own x_pub (independent install). The exact hex is
+// the telefon.lleo.me identity — kept here as a separate entry in case
+// SRV_DEFAULTS ever switches to it.
+// NOTE: at the time of writing telefon.lleo.me's server x_pub is the same
+// 4e82... constant baked into the wasm module (SERVER_X_PUB), so the
+// MAILBOX_DEFAULTS lookup above suffices. If a future deploy changes the
+// server x_pub, add a row here.
+
+// RU-VPS mailbox (next to telefon.lleo.me). Reached when the client is
+// pointed at a relay running that install. Indexed by the RU VPS's own
+// server x_pub. See ws_mailbox/doc/PROTOCOL.md → Deploy.
+//
+// Pi mailbox: id 56610f910d800042, pub 56610f910d800042...5cefc0c
+// RU mailbox: id 908a3893e8ca22f0, pub 908a3893e8ca22f0...95a1a0a
+//
+// Today both SRV_DEFAULTS.xpub points to the Pi (4e82...), so the only
+// useful mapping is the first row. The RU row is wired for the day the
+// client lets the user switch endpoints fully (custom server pubkey in
+// settings) — the lookup will then pick the right mailbox automatically.
+
+function pickDefaultMailboxXpubFor(serverXpubHex) {
+  return MAILBOX_DEFAULTS[serverXpubHex] || ''
+}
+
 function serverConfig() {
   return {
     url:   localStorage.getItem('telefon_ws_url')   || '',
     xpub:  localStorage.getItem('telefon_srv_xpub')  || '',
     edpub: localStorage.getItem('telefon_srv_edpub') || '',
   }
+}
+
+// Mailbox configuration. The flag defaults to ON (offline cache enabled);
+// the pubkey defaults to whatever pickDefaultMailboxXpubFor() returns for
+// the currently-configured server. Empty pubkey disables the feature even
+// when the flag is on, so the user can opt out for a custom-server deploy
+// they haven't paired with a mailbox yet.
+function mailboxEnabled() {
+  const v = localStorage.getItem('telefon_mailbox_enabled')
+  if (v === null) return true            // default ON
+  return v === '1' || v === 'true'
+}
+function mailboxXpubHex() {
+  const stored = localStorage.getItem('telefon_mailbox_x_pub')
+  if (stored !== null) return stored.trim()  // empty string = explicit "off"
+  // No explicit setting yet → use the default for the configured server.
+  const srvXpub = (localStorage.getItem('telefon_srv_xpub') || SRV_DEFAULTS.xpub).toLowerCase()
+  return pickDefaultMailboxXpubFor(srvXpub)
+}
+function mailboxIdHex() {
+  const x = mailboxXpubHex()
+  return x ? x.slice(0, 16) : ''   // ClientId = x_pub[..8] = first 16 hex chars
 }
 const _srv = serverConfig()
 const client = new WsClient({

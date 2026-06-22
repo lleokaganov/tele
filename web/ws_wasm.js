@@ -130,6 +130,52 @@ export class WsSession {
         }
     }
     /**
+     * Build a self-contained mailbox envelope addressed to a peer already
+     * in the address book. Used inside the body of a STORE/DELETE the
+     * sender hands to the mailbox: the mailbox is opaque to the contents,
+     * and the recipient later receives these bytes verbatim inside a
+     * DELIVERY and must be able to identify us without any relay-side
+     * XOR-header recognition (the routing header is meaningless here).
+     *
+     * Wire = `[sender_x_pub:32][nonce:24][ct][sig:64]`.
+     *
+     * `out_nonce` is filled in with the 24-byte nonce that was used to
+     * AEAD-seal the payload; the caller persists it so that a later
+     * DELETE can re-encrypt the same plaintext into byte-for-byte the
+     * same ciphertext (xchacha20poly1305 is deterministic given the
+     * key, nonce and plaintext).
+     * @param {Uint8Array} peer_id
+     * @param {number} cmd
+     * @param {Uint8Array} body
+     * @param {number} msg_id
+     * @param {Uint8Array} out_nonce
+     * @returns {Uint8Array}
+     */
+    buildMailboxEnvelope(peer_id, cmd, body, msg_id, out_nonce) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passArray8ToWasm0(peer_id, wasm.__wbindgen_export);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passArray8ToWasm0(body, wasm.__wbindgen_export);
+            const len1 = WASM_VECTOR_LEN;
+            var ptr2 = passArray8ToWasm0(out_nonce, wasm.__wbindgen_export);
+            var len2 = WASM_VECTOR_LEN;
+            wasm.wssession_buildMailboxEnvelope(retptr, this.__wbg_ptr, ptr0, len0, cmd, ptr1, len1, msg_id, ptr2, len2, addHeapObject(out_nonce));
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+            if (r3) {
+                throw takeObject(r2);
+            }
+            var v4 = getArrayU8FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export4(r0, r1 * 1, 1);
+            return v4;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Build a routing frame addressed to a peer already in the address
      * book. `body` is the application-level payload (will be wrapped
      * into the standard `[msg_id][cmd][body]` inner plaintext, AEAD'd
@@ -396,6 +442,36 @@ export class WsSession {
         }
     }
     /**
+     * Decrypt a mailbox envelope that just arrived inside a DELIVERY.
+     * The 32-byte `sender_x_pub` prefix is matched against the address
+     * book to find the peer's Ed25519 key, then the AEAD packet is
+     * signature-verified and decrypted just like a regular peer frame.
+     *
+     * Returns a JS object identical to a `peer`-kind incoming:
+     *   `{ kind: "peer", from_id, cmd, msg_id, body }`,
+     * or `{ kind: "error", reason }` on any failure (unknown sender,
+     * bad signature, decrypt failure, truncation).
+     * @param {Uint8Array} env
+     * @returns {any}
+     */
+    parseMailboxEnvelope(env) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passArray8ToWasm0(env, wasm.__wbindgen_export);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.wssession_parseMailboxEnvelope(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return takeObject(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Compact text payload for embedding in a QR code:
      *   `"K0" + base64url(x_pub || ed_pub || nickname_utf8)`
      * Empty nickname → 88 ASCII chars. With nickname the total grows by
@@ -419,6 +495,43 @@ export class WsSession {
         } finally {
             wasm.__wbindgen_add_to_stack_pointer(16);
             wasm.__wbindgen_export4(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Re-build a mailbox envelope using a caller-supplied nonce, so that
+     * a later DELETE can reproduce the original ciphertext byte-for-byte.
+     * The mailbox keys its blob storage by `blake3(sender_id || ciphertext)`,
+     * so the bytes must match exactly. Returns the same wire shape as
+     * [`build_mailbox_envelope`].
+     * @param {Uint8Array} peer_id
+     * @param {number} cmd
+     * @param {Uint8Array} body
+     * @param {number} msg_id
+     * @param {Uint8Array} nonce
+     * @returns {Uint8Array}
+     */
+    rebuildMailboxEnvelope(peer_id, cmd, body, msg_id, nonce) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passArray8ToWasm0(peer_id, wasm.__wbindgen_export);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passArray8ToWasm0(body, wasm.__wbindgen_export);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passArray8ToWasm0(nonce, wasm.__wbindgen_export);
+            const len2 = WASM_VECTOR_LEN;
+            wasm.wssession_rebuildMailboxEnvelope(retptr, this.__wbg_ptr, ptr0, len0, cmd, ptr1, len1, msg_id, ptr2, len2);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+            if (r3) {
+                throw takeObject(r2);
+            }
+            var v4 = getArrayU8FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export4(r0, r1 * 1, 1);
+            return v4;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
         }
     }
     /**
@@ -486,6 +599,9 @@ export function seed() {
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
+        __wbg___wbindgen_copy_to_typed_array_787746aeb47818bc: function(arg0, arg1, arg2) {
+            new Uint8Array(getObject(arg2).buffer, getObject(arg2).byteOffset, getObject(arg2).byteLength).set(getArrayU8FromWasm0(arg0, arg1));
+        },
         __wbg___wbindgen_is_function_5cd60d5cf78b4eef: function(arg0) {
             const ret = typeof(getObject(arg0)) === 'function';
             return ret;

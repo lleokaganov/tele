@@ -54,6 +54,21 @@ export const ERR = {
   RECIPIENT_OFFLINE:   0x03,
 }
 
+// Mailbox op-codes — these ride as the `cmd` byte of peer-frames addressed
+// to a mailbox peer. The mailbox keys its parser off cmd, not body[0].
+export const MBX = {
+  STORE:        0x01,
+  FETCH_NEXT:   0x02,
+  DELETE:       0x03,
+  DELIVERY:     0x10,
+  EMPTY:        0x11,
+  TOO_BIG:      0x12,
+  MAILBOX_FULL: 0x13,
+  STORED:       0x14,
+  DELETED:      0x15,
+  NOT_FOUND:    0x16,
+}
+
 let wasmReady = null
 function ensureWasm() {
   if (!wasmReady) wasmReady = init()
@@ -376,6 +391,54 @@ export class WsClient {
     const frame = this.session.buildPeerFrame(peerId, cmd, body, this._nextMsgId())
     this.ws.send(frame)
     return true
+  }
+
+  /** Build a self-contained mailbox envelope addressed to `recipientPeerId`,
+   *  for inclusion inside a STORE/DELETE body sent to the mailbox.
+   *  Returns `{ env: Uint8Array, nonce: Uint8Array(24) }` — the caller
+   *  persists `nonce` next to the outbox entry so a later DELETE can
+   *  re-encrypt the same plaintext into the exact same ciphertext. */
+  buildMailboxEnvelope(recipientPeerId, cmd, body) {
+    const nonce = new Uint8Array(24)
+    const env = this.session.buildMailboxEnvelope(recipientPeerId, cmd, body, this._nextMsgId(), nonce)
+    return { env, nonce }
+  }
+
+  /** Re-build the same mailbox envelope from a stored nonce. Used to
+   *  produce a byte-identical ciphertext for DELETE, whose lookup key is
+   *  blake3(sender_id || ciphertext) on the mailbox server. */
+  rebuildMailboxEnvelope(recipientPeerId, cmd, body, nonce) {
+    return this.session.rebuildMailboxEnvelope(recipientPeerId, cmd, body, this._nextMsgId(), nonce)
+  }
+
+  /** Decrypt a mailbox envelope just pulled out of a DELIVERY. Returns the
+   *  same shape as a live peer-frame: `{ kind:'peer'|'error', from_id, cmd,
+   *  body, msg_id, reason? }`. The caller funnels the result through its
+   *  normal incoming-peer dispatcher. */
+  parseMailboxEnvelope(env) {
+    const msg = this.session.parseMailboxEnvelope(env)
+    if (msg.body)    msg.body    = asU8(msg.body)
+    if (msg.from_id) msg.from_id = asU8(msg.from_id)
+    return msg
+  }
+
+  /** Send a STORE/DELETE command to the mailbox peer. `mailboxPeerId` is
+   *  the 8-byte ClientId of the mailbox; `envBytes` is the inner envelope
+   *  built by buildMailboxEnvelope (already addressed to the REAL recipient).
+   *
+   *  The mailbox op-code rides in the `cmd` byte of the peer-frame:
+   *  STORE=0x01, FETCH_NEXT=0x02, DELETE=0x03. Body for STORE/DELETE is
+   *  `[recipient_pub:32][envBytes]`. */
+  mailboxSend(mailboxPeerId, op, recipientXPub, envBytes) {
+    const body = new Uint8Array(32 + envBytes.length)
+    body.set(recipientXPub, 0)
+    body.set(envBytes, 32)
+    return this._sendPeer(mailboxPeerId, op, body)
+  }
+
+  /** Send a FETCH_NEXT to the mailbox (cmd=0x02, empty body). */
+  mailboxFetchNext(mailboxPeerId) {
+    return this._sendPeer(mailboxPeerId, 0x02, new Uint8Array(0))
   }
 
   _sendServer(cmd, body) {

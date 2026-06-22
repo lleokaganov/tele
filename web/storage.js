@@ -4,9 +4,13 @@
 //   messages   { id, peer_id, dir, body, ts, status }
 //                body is plain text for chat; if it starts with '%' the
 //                remainder is a file_id pointing into the files table.
-//   outbox     { id, attempts, last_try_ts }
+//   outbox     { id, attempts, last_try_ts, mailbox_nonce? }
 //                mirror of pending out-messages for fast retry. Removed
-//                on DELIVERY_ACK.
+//                on DELIVERY_ACK / READ_ACK. `mailbox_nonce`, if present,
+//                is the 24-byte XChaCha20 nonce we used to encrypt the
+//                STORE'd ciphertext — its presence is the "lives in the
+//                mailbox" flag, and a later DELETE rebuilds the same
+//                ciphertext from that nonce.
 //   files      { id, mime, name, size, blob, thumb_blob }
 //                actual file bytes — populated by Stage B (chunked transfer).
 
@@ -142,6 +146,27 @@ export const Storage = {
     q.attempts += 1
     q.last_try_ts = Date.now()
     await DB.add(DB_NAME, 'outbox', q)
+  },
+
+  /** Mark an outbox entry as "lying in the mailbox" by stashing the nonce
+   *  we used to encrypt the STORE'd ciphertext. Used later by DELETE to
+   *  re-encrypt the same plaintext into byte-for-byte the same ciphertext.
+   *  No-op if the outbox entry no longer exists (e.g. a delivery-ack landed
+   *  while the mailbox STORE was still in flight). */
+  async setMailboxNonce(id, nonceU8) {
+    const q = await DB.get(DB_NAME, 'outbox', id)
+    if (!q) return
+    q.mailbox_nonce = Array.from(nonceU8)  // store as plain array for IDB
+    await DB.add(DB_NAME, 'outbox', q)
+  },
+
+  /** Return the 24-byte mailbox nonce for an outbox entry, or null if not
+   *  stored (message either was never STORE'd offline, or has already been
+   *  acknowledged by the recipient and dropped from the outbox). */
+  async getMailboxNonce(id) {
+    const q = await DB.get(DB_NAME, 'outbox', id)
+    if (!q || !q.mailbox_nonce) return null
+    return new Uint8Array(q.mailbox_nonce)
   },
 
   /** Delete a single message by id. Also removes its outbox entry and,

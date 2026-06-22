@@ -476,6 +476,124 @@ impl WsSession {
         Ok(frame)
     }
 
+    /// Build a self-contained mailbox envelope addressed to a peer already
+    /// in the address book. Used inside the body of a STORE/DELETE the
+    /// sender hands to the mailbox: the mailbox is opaque to the contents,
+    /// and the recipient later receives these bytes verbatim inside a
+    /// DELIVERY and must be able to identify us without any relay-side
+    /// XOR-header recognition (the routing header is meaningless here).
+    ///
+    /// Wire = `[sender_x_pub:32][nonce:24][ct][sig:64]`.
+    ///
+    /// `out_nonce` is filled in with the 24-byte nonce that was used to
+    /// AEAD-seal the payload; the caller persists it so that a later
+    /// DELETE can re-encrypt the same plaintext into byte-for-byte the
+    /// same ciphertext (xchacha20poly1305 is deterministic given the
+    /// key, nonce and plaintext).
+    #[wasm_bindgen(js_name = buildMailboxEnvelope)]
+    pub fn build_mailbox_envelope(
+        &self,
+        peer_id: &[u8],
+        cmd: u8,
+        body: &[u8],
+        msg_id: u16,
+        out_nonce: &mut [u8],
+    ) -> Result<Vec<u8>, JsValue> {
+        if out_nonce.len() != 24 {
+            return Err(JsValue::from_str("out_nonce must be 24 bytes"));
+        }
+        let id: [u8; 8] = peer_id
+            .try_into()
+            .map_err(|_| JsValue::from_str("peer_id must be 8 bytes"))?;
+        let peer = self
+            .peers
+            .get(&id)
+            .ok_or_else(|| JsValue::from_str("peer not in address book"))?;
+        let inner = pack_inner(msg_id, cmd, body);
+        let packet = encrypt_and_sign(&inner, &self.x_priv, &self.ed, &peer.x_pub)?;
+        out_nonce.copy_from_slice(&packet[..24]);
+        let mut env = Vec::with_capacity(32 + packet.len());
+        env.extend_from_slice(&self.x_pub);
+        env.extend_from_slice(&packet);
+        Ok(env)
+    }
+
+    /// Re-build a mailbox envelope using a caller-supplied nonce, so that
+    /// a later DELETE can reproduce the original ciphertext byte-for-byte.
+    /// The mailbox keys its blob storage by `blake3(sender_id || ciphertext)`,
+    /// so the bytes must match exactly. Returns the same wire shape as
+    /// [`build_mailbox_envelope`].
+    #[wasm_bindgen(js_name = rebuildMailboxEnvelope)]
+    pub fn rebuild_mailbox_envelope(
+        &self,
+        peer_id: &[u8],
+        cmd: u8,
+        body: &[u8],
+        msg_id: u16,
+        nonce: &[u8],
+    ) -> Result<Vec<u8>, JsValue> {
+        let nonce_arr: [u8; 24] = nonce
+            .try_into()
+            .map_err(|_| JsValue::from_str("nonce must be 24 bytes"))?;
+        let id: [u8; 8] = peer_id
+            .try_into()
+            .map_err(|_| JsValue::from_str("peer_id must be 8 bytes"))?;
+        let peer = self
+            .peers
+            .get(&id)
+            .ok_or_else(|| JsValue::from_str("peer not in address book"))?;
+        let inner = pack_inner(msg_id, cmd, body);
+        // Mirror encrypt_and_sign, but with a caller-supplied nonce.
+        let shared = x25519(self.x_priv, peer.x_pub);
+        let cipher = XChaCha20Poly1305::new(Key::from_slice(&shared));
+        let ct = cipher
+            .encrypt(XNonce::from_slice(&nonce_arr), inner.as_slice())
+            .map_err(|_| JsValue::from_str("aead encrypt"))?;
+        let mut packet = Vec::with_capacity(24 + ct.len() + 64);
+        packet.extend_from_slice(&nonce_arr);
+        packet.extend_from_slice(&ct);
+        let sig = self.ed.sign(&packet).to_bytes();
+        packet.extend_from_slice(&sig);
+        let mut env = Vec::with_capacity(32 + packet.len());
+        env.extend_from_slice(&self.x_pub);
+        env.extend_from_slice(&packet);
+        Ok(env)
+    }
+
+    /// Decrypt a mailbox envelope that just arrived inside a DELIVERY.
+    /// The 32-byte `sender_x_pub` prefix is matched against the address
+    /// book to find the peer's Ed25519 key, then the AEAD packet is
+    /// signature-verified and decrypted just like a regular peer frame.
+    ///
+    /// Returns a JS object identical to a `peer`-kind incoming:
+    ///   `{ kind: "peer", from_id, cmd, msg_id, body }`,
+    /// or `{ kind: "error", reason }` on any failure (unknown sender,
+    /// bad signature, decrypt failure, truncation).
+    #[wasm_bindgen(js_name = parseMailboxEnvelope)]
+    pub fn parse_mailbox_envelope(&self, env: &[u8]) -> Result<JsValue, JsValue> {
+        if env.len() < 32 + 24 + 16 + 64 {
+            return self.err("envelope too short");
+        }
+        let sender_x_pub: [u8; 32] = env[..32].try_into().unwrap();
+        let from_id: [u8; 8] = id_of(&sender_x_pub);
+        let peer = match self.peers.get(&from_id) {
+            Some(p) => p.clone(),
+            None => return self.err("unknown sender"),
+        };
+        // Defensive: the prefix could be spoofed, but the address book is
+        // keyed by id_of(x_pub) = x_pub[..8]; mismatched full keys (same
+        // id, different x_pub) are vanishingly unlikely yet still rejected.
+        if peer.x_pub != sender_x_pub {
+            return self.err("sender x_pub mismatch");
+        }
+        let inner =
+            match verify_and_decrypt(&env[32..], &self.x_priv, &peer.x_pub, &peer.ed_pub) {
+                Ok(v) => v,
+                Err(e) => return self.err(&e.as_string().unwrap_or_else(|| "decrypt".into())),
+            };
+        self.ok_peer(&from_id, &inner)
+    }
+
     /// Build a server-bound frame (cmd 0x40 SUBSCRIBE, 0x41 UNSUBSCRIBE, …).
     /// `body` is taken as-is (e.g. concatenated 32-byte X pubs for
     /// subscribe / unsubscribe).
