@@ -2809,6 +2809,17 @@ function autoGrowInput() {
 }
 $('text-input').addEventListener('input', autoGrowInput)
 
+// Ctrl+Enter (or Cmd+Enter on Mac) sends the message without leaving the
+// composer. Plain Enter still inserts a newline — Leo's preference is that
+// the explicit Send button stays the only "always sends" path, the modifier
+// just spares power-users a mouse trip.
+$('text-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault()
+    $('send-text').click()
+  }
+})
+
 // --- Floating "Copy" button for partial text selection ---------------------
 // WebView's native selection ActionMode (the system Copy bar) is unreliable, so
 // when the user selects a chunk of message text we pop our own Copy button
