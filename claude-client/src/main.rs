@@ -745,6 +745,15 @@ fn make_qr(me: &Identity, nick: &str) -> String {
     format!("{QR_PREFIX}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&combined))
 }
 
+/// Chatty diagnostics (presence flapping and the like) only when asked for.
+/// Off by default so a tailed log carries messages, not noise.
+fn verbose() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        matches!(env::var("WSCHAT_VERBOSE").as_deref(), Ok("1") | Ok("true") | Ok("yes"))
+    })
+}
+
 // ============================== main ==============================
 
 #[tokio::main]
@@ -1196,11 +1205,19 @@ async fn handle_incoming(
         if let Some(inner) = decode_server_frame(frame, k_s2c, &me.x_priv, server_x_pub, server_ed_vk) {
             if inner.len() >= 3 && inner[2] == CMD_PEER_ONLINE {
                 *peer_online = true;
-                eprintln!("[wschat] peer online — flushing outbox");
+                // Presence flaps constantly as a phone sleeps and wakes. Logging
+                // it by default floods anything watching the log (an agent tail)
+                // with events that carry no information: reconnects and the
+                // outbox are handled automatically. Set WSCHAT_VERBOSE=1 to see it.
+                if verbose() {
+                    eprintln!("[wschat] peer online — flushing outbox");
+                }
                 flush_outbox(me, peer, nick, k_c2s, server_x_pub, ws, seq, sent, file_sent).await;
             } else if inner.len() >= 3 && inner[2] == CMD_PEER_OFFLINE {
                 *peer_online = false;
-                eprintln!("[wschat] peer offline");
+                if verbose() {
+                    eprintln!("[wschat] peer offline");
+                }
             }
         }
         return;
