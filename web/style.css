@@ -424,6 +424,25 @@ html[data-theme="dark"] .msg.me    { background: rgba(255,98,0,.14); }
   flex: 0 0 auto;
   -webkit-user-select: none; user-select: none;   /* don't grab ticks when selecting text */
 }
+/* HH:MM stamp inside the bubble — same muted weight as the ticks, and never
+ * part of a text selection. */
+.msg-time {
+  font-size: .7rem; color: var(--ink-soft);
+  flex: 0 0 auto; order: 90;          /* after the text, before ticks/⋮ */
+  -webkit-user-select: none; user-select: none;
+}
+.msg-status { order: 91 }
+.msg-actions { order: 92 }
+/* Centred day divider between calendar days. */
+.day-sep {
+  align-self: center;
+  margin: .45rem 0 .2rem;
+  padding: .1rem .55rem;
+  font-size: .72rem; color: var(--ink-soft);
+  background: var(--bg-soft); border: 1px solid var(--line);
+  border-radius: 999px;
+  -webkit-user-select: none; user-select: none;
+}
 .msg { cursor: default; }
 .msg.editing { outline: 2px solid var(--accent); outline-offset: 1px; }
 .msg-edited {

@@ -49,6 +49,9 @@ function applyI18n(root = document) {
 window.addEventListener('lui:lang', () => {
   applyI18n()
   refreshConnText()
+  // Day separators carry translated words ("Today"/"Yesterday") and a
+  // locale-formatted date, so they have to be rebuilt on a language switch.
+  refreshDaySeparators()
 })
 
 // Keep the native status-bar tint (Android theme-color meta) in sync with the
@@ -981,6 +984,7 @@ async function refreshChat() {
   if (!currentPeerId) return
   const rows = await Storage.historyTail(currentPeerId, CHAT_WINDOW)
   for (const m of rows) box.appendChild(await renderMessageNode(m))
+  refreshDaySeparators()
   if (rows.length > 0) oldestLoadedTs = rows[0].ts
   // If the tail already covers the whole history there's nothing above it.
   if (rows.length < CHAT_WINDOW) noMoreOlder = true
@@ -1011,6 +1015,7 @@ async function loadOlderMessages() {
     const frag = document.createDocumentFragment()
     for (const m of fresh) frag.appendChild(await renderMessageNode(m))
     box.insertBefore(frag, box.firstChild)
+    refreshDaySeparators()
     oldestLoadedTs = fresh[0].ts
     // Fewer than a full page of *raw* rows means we've hit the start.
     if (rows.length < CHAT_PAGE) noMoreOlder = true
@@ -1273,10 +1278,71 @@ function humanBytes(n) {
   return `${(n/1024/1024).toFixed(1)} MB`
 }
 
+// ── Message timestamps & day separators ───────────────────────────────────────
+// Every bubble carries a small HH:MM stamp (issue #2), and the chat is broken
+// into days by a centred separator — "Today" / "Yesterday" / a full date — so
+// a long history stays readable when scrolling back.
+function fmtMsgTime(ts) {
+  return new Date(ts).toLocaleTimeString(lui.lang(), { hour: '2-digit', minute: '2-digit' })
+}
+function fmtMsgFull(ts) {
+  return new Date(ts).toLocaleString(lui.lang())
+}
+// Local calendar day as a comparable integer (YYYYMMDD). Built from local
+// getters rather than epoch division, so DST shifts and month ends can't
+// nudge a message into the neighbouring day.
+function dayIndex(ts) {
+  const d = new Date(ts)
+  return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate()
+}
+function dayLabel(ts) {
+  const now   = new Date()
+  const today = dayIndex(now.getTime())
+  const yest  = dayIndex(now.getTime() - 86400000)
+  const k     = dayIndex(ts)
+  if (k === today) return t('day_today')
+  if (k === yest)  return t('day_yesterday')
+  const d = new Date(ts)
+  // Same year → no year in the label; older → include it.
+  const opts = (d.getFullYear() === now.getFullYear())
+    ? { day: 'numeric', month: 'long' }
+    : { day: 'numeric', month: 'long', year: 'numeric' }
+  return d.toLocaleDateString(lui.lang(), opts)
+}
+// Re-walk the open chat and make sure exactly one separator sits before the
+// first message of each day. Cheap: the DOM window is ~50-75 rows, and doing
+// it as a sweep keeps append/prepend paths from each needing their own logic.
+function refreshDaySeparators() {
+  const box = $('chat')
+  if (!box) return
+  for (const sep of box.querySelectorAll('.day-sep')) sep.remove()
+  let prevDay = null
+  for (const row of Array.from(box.querySelectorAll('.msg'))) {
+    const ts = Number(row.dataset.ts)
+    if (!ts) continue
+    const k = dayIndex(ts)
+    if (k !== prevDay) {
+      const sep = document.createElement('div')
+      sep.className = 'day-sep'
+      sep.textContent = dayLabel(ts)
+      box.insertBefore(sep, row)
+      prevDay = k
+    }
+  }
+}
+
 function makeMsgShell(m) {
   const row = document.createElement('div')
   row.className = 'msg ' + (m.dir === 'out' ? 'me' : 'them')
   row.dataset.id = m.id
+  // Live rows (a message just sent/received) arrive without ts — stamp them now.
+  const ts = m.ts || Date.now()
+  row.dataset.ts = String(ts)
+  const time = document.createElement('span')
+  time.className = 'msg-time'
+  time.textContent = fmtMsgTime(ts)
+  time.title = fmtMsgFull(ts)
+  row.appendChild(time)
   if (m.dir === 'out') {
     const tick = document.createElement('span')
     tick.className = 'msg-status'
@@ -1306,7 +1372,7 @@ function appendChatRow(m) {
   const node = isFileRef(m.body)
     ? null  // file rows are produced asynchronously elsewhere
     : renderTextMessage(m)
-  if (node) $('chat').appendChild(node)
+  if (node) { $('chat').appendChild(node); refreshDaySeparators() }
   return node
 }
 
@@ -2809,15 +2875,22 @@ function autoGrowInput() {
 }
 $('text-input').addEventListener('input', autoGrowInput)
 
-// Ctrl+Enter (or Cmd+Enter on Mac) sends the message without leaving the
-// composer. Plain Enter still inserts a newline — Leo's preference is that
-// the explicit Send button stays the only "always sends" path, the modifier
-// just spares power-users a mouse trip.
+// Enter handling in the composer, in one place so the paths can't fire twice:
+//   Ctrl/Cmd+Enter  — always sends, whatever the setting says.
+//   Shift+Enter     — always a newline.
+//   plain Enter     — sends only when "send on Enter" is on (default off, so
+//                     by default it stays a newline and the Send button is the
+//                     only always-sends path — Leo's preference).
 $('text-input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+  if (e.key !== 'Enter') return
+  if (e.ctrlKey || e.metaKey) {
     e.preventDefault()
     $('send-text').click()
+    return
   }
+  if (e.shiftKey || !sendOnEnterEnabled()) return   // newline
+  e.preventDefault()
+  $('send-text').click()
 })
 
 // --- Floating "Copy" button for partial text selection ---------------------
@@ -3548,8 +3621,8 @@ async function flushOutboxFor(peerIdHex) {
     }
   }
 }
-// Enter inserts a newline (textarea default); sending is ONLY via the send
-// button — per Leo's explicit preference. Deliberately no Enter-to-send.
+// Composer Enter behaviour lives in the keydown handler next to autoGrowInput();
+// by default Enter is a newline and the Send button sends.
 
 /* =============================== connection-type dot =============================== */
 // Small dot in the call header: green = direct P2P, orange = relayed via TURN
@@ -3825,6 +3898,16 @@ async function decryptBackup(env, password) {
 // IndexedDB — they only render in-memory in the open chat and vanish on restart.
 function chatsPersistEnabled() {
   return localStorage.getItem('telefon_persist_chats') !== '0'
+}
+
+// ── Composer: send-on-Enter toggle ────────────────────────────────────────────
+// Default OFF: plain Enter inserts a newline, and the Send button (or
+// Ctrl/Cmd+Enter) is what sends — Leo's preference. Users who expect the
+// habitual messenger behaviour can flip this on in settings, and then Enter
+// sends while Shift+Enter makes a newline.
+// localStorage 'telefon_send_on_enter': '1' = ON, absent/'0' = OFF.
+function sendOnEnterEnabled() {
+  return localStorage.getItem('telefon_send_on_enter') === '1'
 }
 
 // ── Block list ─────────────────────────────────────────────────────────────────
@@ -4264,6 +4347,14 @@ function openSettings() {
       </label>
     </div>
 
+    <div class="set-line">
+      <span class="set-label">${escapeHtml(t('set_send_on_enter'))}</span>
+      <label class="toggle">
+        <input id="set-send-on-enter" type="checkbox" data-nopersist />
+        <span class="track"></span>
+      </label>
+    </div>
+
     <div class="set-line" title="${escapeHtml(t('server_hint'))}">
       <span class="set-label">${escapeHtml(t('set_server'))}</span>
       <span id="set-url-display" class="inline-edit" tabindex="0" role="button" title="${escapeHtml(t('tap_to_edit'))}"></span>
@@ -4321,6 +4412,7 @@ function openSettings() {
   q('#set-lang').value   = langNow
   q('#set-fx').checked   = !!fxNow
   q('#set-persist').checked = chatsPersistEnabled()
+  q('#set-send-on-enter').checked = sendOnEnterEnabled()
 
   // ── My name (inline edit: shown as text; tap → input; commit on blur/Enter,
   //    no OK button — what you typed is your name) ──
@@ -4382,6 +4474,9 @@ function openSettings() {
   // written, chats live only in the open view and vanish on restart.
   q('#set-persist').onchange = (e) => {
     localStorage.setItem('telefon_persist_chats', e.target.checked ? '1' : '0')
+  }
+  q('#set-send-on-enter').onchange = (e) => {
+    localStorage.setItem('telefon_send_on_enter', e.target.checked ? '1' : '0')
   }
 
   // ── Server config (no buttons: URL is inline-edit, empty = default; any
