@@ -3341,6 +3341,71 @@ $('file-input').onchange = async (e) => {
   for (const file of files) await sendFile(file)
 }
 
+// Ctrl+V / Cmd+V a screenshot straight into the open chat, no detour through
+// the 📎 picker — this is how people expect a web chat to take a screen grab.
+// Fires on the whole document so the clipboard lands even when the composer
+// isn't focused; every other field's paste is left alone.
+document.addEventListener('paste', async (e) => {
+  if (!currentPeerId) return
+  if (!$('screen-call').classList.contains('active')) return
+  // Read-only chats (type "info") hide the composer — nothing to send into.
+  const composer = document.querySelector('.chat-input')
+  if (!composer || composer.hidden) return
+  const el = e.target
+  if (el instanceof Element && el.id !== 'text-input' &&
+      (el.isContentEditable || el.closest('input,textarea'))) return
+
+  const dt = e.clipboardData
+  if (!dt) return
+
+  let files = Array.from(dt.files || [])
+  if (!files.length) {
+    files = Array.from(dt.items || [])
+      .filter((i) => i.kind === 'file')
+      .map((i) => i.getAsFile())
+      .filter(Boolean)
+  }
+  if (!files.length) return
+
+  const images = files.filter((f) => (f.type || '').startsWith('image/'))
+  const hasText = !!(dt.getData('text/plain') || '').trim()
+
+  if (images.length) {
+    // An image always goes out — that is what the paste was for. But if text
+    // came along (copying from a document ships both), let the text paste into
+    // the composer as well instead of swallowing it: neither half is lost.
+    if (!hasText) e.preventDefault()
+    for (const file of images) await sendFile(nameClipboardFile(file))
+    return
+  }
+
+  // No image: real files (copied in Explorer / Finder) are worth sending, but
+  // only when the clipboard is just the file — a copy that also carries text is
+  // a text copy whose path tagged along, and must stay a text paste.
+  if (hasText) return
+  e.preventDefault()
+  for (const file of files) await sendFile(nameClipboardFile(file))
+})
+
+// A clipboard image arrives with no name, or as a generic "image.png" every
+// single time. Stamp it, so a chat full of pasted screenshots stays navigable
+// and saving them to disk doesn't collide on one filename.
+function nameClipboardFile(file) {
+  const hasRealName = file.name && file.name !== 'image.png' &&
+                      /\.[A-Za-z0-9]{1,5}$/.test(file.name)
+  if (hasRealName) return file
+  const ext = String(file.type.split('/')[1] || 'png').split('+')[0].toLowerCase()
+  const d = new Date(), p = (n) => String(n).padStart(2, '0')
+  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
+                `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+  try {
+    return new File([file], `screenshot-${stamp}.${ext}`,
+                    { type: file.type, lastModified: file.lastModified || Date.now() })
+  } catch {
+    return file   // ancient WebView without the File constructor
+  }
+}
+
 async function sendFile(file) {
   if (!currentPeerId) { toast(t('no_peer'), 'error'); return }
   const peerId = hexU8(currentPeerId)

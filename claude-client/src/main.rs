@@ -14,6 +14,15 @@
 //!   WSCHAT_NICK                     our display name (default "wschat")
 //!   WSCHAT_WATCH                    if set, poll this file for outgoing
 //!                                   lines instead of reading stdin
+//!   WSCHAT_COALESCE_MS              quiet gap (ms) that ends an incoming
+//!                                   batch; the batch then prints as ONE line
+//!                                   with newlines escaped. 0 = print each
+//!                                   message at once. Default 3000
+//!   WSCHAT_COALESCE_MAX_MS          cap on how long a batch may grow (20000)
+//!   WSCHAT_UNESCAPE_OUT             1 = turn `\n` in an outgoing line into a
+//!                                   real newline (human-typed bridges). Off by
+//!                                   default so machine-written text keeps its
+//!                                   backslashes
 //!   WS_URL                          default wss://telefon.lleo.me/ws
 //!   WSCHAT_SERVER_X_PUB / _ED_PUB   default telefon.lleo.me server keys
 //!   WSCHAT_MAILBOX_X_PUB            mailbox X25519 pubkey (hex32). If set and
@@ -361,18 +370,139 @@ struct InboxJournal {
     seen: HashSet<[u8; 16]>,
 }
 
-/// Escape a payload so it fits on one journal line (`\\`, `\n`, `\t`).
+/// Escape a payload so it fits on one journal line (`\\`, `\n`, `\r`, `\t`).
 fn journal_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             c => out.push(c),
         }
     }
     out
+}
+
+// ===================== incoming print sink =====================
+//
+// Two rules the reader on the other end depends on:
+//
+//   1. one message == exactly one physical line. A tailed log is read line by
+//      line, so a newline inside the text would split one message into several
+//      independent events; the reader starts answering the first half before
+//      the rest exists. Newlines are escaped instead (`\n`, same scheme as the
+//      inbox journal) — unescape on read to get the text back.
+//
+//   2. a BURST == one physical line too. Messages typed in a row (and the file
+//      that goes with them) are one thought split across taps of Send. Printing
+//      them separately has the same failure mode as (1): the reader answers
+//      "sure, but where is the question?" while the question is still in
+//      flight. So an item is held back until the peer has been quiet for
+//      `WSCHAT_COALESCE_MS`, then the whole batch prints as one line.
+//
+// Delivery acks are sent the moment a frame arrives, so holding the print back
+// costs the sender nothing visible — their ✓ appears immediately.
+
+struct Sink {
+    /// Whose messages are pending (a different nick forces a flush first).
+    nick: String,
+    parts: Vec<String>,
+    /// When the batch started / when the last item joined it.
+    first: Option<std::time::Instant>,
+    last: Option<std::time::Instant>,
+}
+
+static SINK: std::sync::Mutex<Sink> = std::sync::Mutex::new(Sink {
+    nick: String::new(),
+    parts: Vec::new(),
+    first: None,
+    last: None,
+});
+
+/// Quiet gap that ends a batch. `WSCHAT_COALESCE_MS=0` prints every item at
+/// once (old behaviour).
+fn coalesce_ms() -> u64 {
+    static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        env::var("WSCHAT_COALESCE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(3000)
+    })
+}
+
+/// Hard cap on how long a batch may keep growing, so a peer typing without
+/// pause cannot delay the print indefinitely.
+fn coalesce_max_ms() -> u64 {
+    static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        env::var("WSCHAT_COALESCE_MAX_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(20_000)
+    })
+}
+
+fn sink_write(nick: &str, text: &str) {
+    use std::io::Write;
+    println!("{}: {}", nick, journal_escape(text));
+    let _ = std::io::stdout().flush();
+}
+
+fn sink_flush_locked(s: &mut Sink) {
+    if s.parts.is_empty() {
+        return;
+    }
+    sink_write(&s.nick, &s.parts.join("\n"));
+    s.parts.clear();
+    s.first = None;
+    s.last = None;
+}
+
+/// Queue one incoming item: message text, or a `[file] …` note.
+fn sink_push(nick: &str, item: String) {
+    if coalesce_ms() == 0 {
+        sink_write(nick, &item);
+        return;
+    }
+    let mut s = SINK.lock().unwrap();
+    if s.nick != nick {
+        sink_flush_locked(&mut s);
+        s.nick = nick.to_string();
+    }
+    let now = std::time::Instant::now();
+    s.first.get_or_insert(now);
+    s.last = Some(now);
+    s.parts.push(item);
+}
+
+/// Print the pending batch if the peer went quiet (or the cap expired).
+/// Called from the event loop on a short ticker.
+fn sink_tick() {
+    let mut s = SINK.lock().unwrap();
+    let (Some(first), Some(last)) = (s.first, s.last) else { return };
+    let now = std::time::Instant::now();
+    if now.duration_since(last) >= Duration::from_millis(coalesce_ms())
+        || now.duration_since(first) >= Duration::from_millis(coalesce_max_ms())
+    {
+        sink_flush_locked(&mut s);
+    }
+}
+
+/// Print whatever is pending right now (startup recovery, link loss, exit).
+fn sink_flush() {
+    let mut s = SINK.lock().unwrap();
+    sink_flush_locked(&mut s);
+}
+
+/// Should an outgoing line be unescaped (`\n` → newline) before sending?
+///
+/// OFF by default: the watch file is often written by a program (a console
+/// responder piping an assistant's answer, code samples included), and a
+/// literal backslash-n inside code must survive. A human-driven bridge, where
+/// typing `\n` to mean "new line" is the point, opts in with
+/// `WSCHAT_UNESCAPE_OUT=1`.
+fn unescape_out() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        matches!(env::var("WSCHAT_UNESCAPE_OUT").as_deref(), Ok("1") | Ok("true") | Ok("yes"))
+    })
 }
 
 /// Reverse of `journal_escape`.
@@ -383,6 +513,7 @@ fn journal_unescape(s: &str) -> String {
         if c == '\\' {
             match chars.next() {
                 Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
                 Some('t') => out.push('\t'),
                 Some('\\') => out.push('\\'),
                 Some(other) => {
@@ -497,16 +628,14 @@ impl InboxJournal {
             if status == "unread" {
                 self.unread_q.push_back(msgid);
                 if kind == "file" {
-                    println!("{}: [file] {} (recovered)", nick, payload);
+                    sink_push(&nick, format!("[file] {payload} (recovered)"));
                 } else {
-                    for sub in payload.split('\n') {
-                        println!("{}: {}", nick, sub);
-                    }
+                    sink_push(&nick, payload);
                 }
                 recovered += 1;
             }
         }
-        let _ = std::io::Write::flush(&mut std::io::stdout());
+        sink_flush();
         if recovered > 0 {
             eprintln!("[wschat] recovered {recovered} unread message(s) from inbox journal");
         }
@@ -907,6 +1036,8 @@ async fn main() -> anyhow::Result<()> {
         }
 
         let mut poll = tokio::time::interval(Duration::from_millis(500));
+        // Drives the incoming print sink: a batch prints once the peer goes quiet.
+        let mut sink_poll = tokio::time::interval(Duration::from_millis(200));
         // Liveness: the server emits a frame (binary, WS-ping, or plain-text "ping")
         // at least every ~20s. If we see NOTHING for >50s the socket has silently
         // gone dead (NAT drop / sleep) without a close event — force a reconnect.
@@ -953,6 +1084,10 @@ async fn main() -> anyhow::Result<()> {
                             } else if let Some(path) = parse_file_marker(&text) {
                                 send_file(path, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut file_sent, peer_online).await;
                             } else {
+                                // Outgoing is line-based too: with WSCHAT_UNESCAPE_OUT
+                                // a `\n` in a line becomes a real newline, so a
+                                // multi-line reply leaves as ONE message, not N.
+                                let text = if unescape_out() { journal_unescape(&text) } else { text };
                                 send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, peer_online, mailbox.as_ref(), &mut mailbox_state).await;
                             }
                         }
@@ -974,21 +1109,28 @@ async fn main() -> anyhow::Result<()> {
                                 } else if let Some(fpath) = parse_file_marker(&text) {
                                     send_file(fpath, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut file_sent, peer_online).await;
                                 } else {
+                                    // Same escaping as incoming, mirrored (opt-in):
+                                    // one watch-file line = one message, `\n` inside
+                                    // it is a real newline for the peer.
+                                    let text = if unescape_out() { journal_unescape(&text) } else { text };
                                     send_text(&text, &me, &peer, &nick, &k_c2s, &server_x_pub, &mut ws, &mut seq, &mut sent, peer_online, mailbox.as_ref(), &mut mailbox_state).await;
                                 }
                             }
                         }
                     }
                 }
+                _ = sink_poll.tick() => { sink_tick(); }
                 _ = liveness.tick() => {
                     if last_rx.elapsed() > Duration::from_secs(50) {
                         eprintln!("[wschat] no frames for >50s — link dead, reconnecting");
                         break;
                     }
                 }
-                _ = tokio::signal::ctrl_c() => { let _ = ws.close(None).await; break 'reconnect; }
+                _ = tokio::signal::ctrl_c() => { sink_flush(); let _ = ws.close(None).await; break 'reconnect; }
             }
         }
+        // Link is going down: nothing more will join the pending batch soon.
+        sink_flush();
         let _ = ws.close(None).await;
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
@@ -1289,21 +1431,13 @@ async fn process_peer_inner(
             // Durable mode: dedup, journal, queue, print — DEFER read-ack until
             // a `[[read]]` directive arrives.
             if j.record(&msgid, "text", &peer.nick, &text) {
-                // Prefix EVERY line with the nick so multi-line messages aren't
-                // lost by line-based log filters. One physical line = one match.
-                for line in text.split('\n') {
-                    println!("{}: {}", peer.nick, line);
-                }
-                let _ = std::io::stdout().flush();
+                sink_push(&peer.nick, text.clone());
             }
             // Duplicate (sender re-delivery): delivery-ack already sent above;
             // do not re-journal, re-print, or re-queue.
         } else {
             // Legacy mode (WSCHAT_INBOX unset): print + auto read-ack.
-            for line in text.split('\n') {
-                println!("{}: {}", peer.nick, line);
-            }
-            let _ = std::io::stdout().flush();
+            sink_push(&peer.nick, text.clone());
             let ack = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
                 &pack_inner(*seq, CMD_READ_ACK, &msgid));
             *seq = seq.wrapping_add(1);
@@ -1325,7 +1459,7 @@ async fn process_peer_inner(
         }
         let p = sent.get(&id).map(|m| m.text.clone()).unwrap_or_default();
         if !p.is_empty() {
-            println!("  \u{2713} delivered: {p}");
+            println!("  \u{2713} delivered: {}", journal_escape(&p));
         }
         let _ = std::io::stdout().flush();
     } else if cmd == CMD_READ_ACK && body.len() >= 16 {
@@ -1335,7 +1469,7 @@ async fn process_peer_inner(
         }
         let p = sent.get(&id).map(|m| m.text.clone()).unwrap_or_default();
         if !p.is_empty() {
-            println!("  \u{2713}\u{2713} read: {p}");
+            println!("  \u{2713}\u{2713} read: {}", journal_escape(&p));
         }
         let _ = std::io::stdout().flush();
     } else if cmd == CMD_FILE_OFFER {
@@ -1382,8 +1516,9 @@ async fn process_peer_inner(
             match std::fs::write(&saved, &data) {
                 Ok(()) => {
                     let saved_path = saved.display().to_string();
-                    println!("{}: [file] {} ({}, {} bytes)", peer.nick, saved_path, f.mime, data.len());
-                    let _ = std::io::stdout().flush();
+                    // Goes through the same sink as text, so a file and the
+                    // message that explains it print as one line.
+                    sink_push(&peer.nick, format!("[file] {} ({}, {} bytes)", saved_path, f.mime, data.len()));
                     saved_ok = Some(saved_path);
                 }
                 Err(e) => {
