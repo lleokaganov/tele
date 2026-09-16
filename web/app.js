@@ -90,6 +90,29 @@ function publicWsUrl() {
   return u.toString()
 }
 
+function isHex64(value) {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value)
+}
+
+async function loadDeploymentRelayConfig() {
+  const configUrl = isNativePlatform()
+    ? new URL('/relay-config.json', PUBLIC_ORIGIN).toString()
+    : 'relay-config.json'
+  try {
+    const res = await fetch(configUrl, { cache: 'no-store' })
+    if (!res.ok) return null
+    const cfg = await res.json()
+    const out = {}
+    if (typeof cfg.url === 'string' && cfg.url.trim()) out.url = cfg.url.trim()
+    if (isHex64(cfg.xpub)) out.xpub = cfg.xpub.toLowerCase()
+    if (isHex64(cfg.edpub)) out.edpub = cfg.edpub.toLowerCase()
+    if (isHex64(cfg.mailbox_xpub)) out.mailbox_xpub = cfg.mailbox_xpub.toLowerCase()
+    return out
+  } catch {
+    return null
+  }
+}
+
 /* =================================== toasts =================================== */
 
 /* =================================== sounds =================================== */
@@ -179,10 +202,11 @@ document.getElementById('my-nickname').textContent = nickname || '?'
 
 // Default relay — shown in settings; overridable. Browser builds default
 // to the current site, while native builds use FALLBACK_PUBLIC_ORIGIN.
+const DEPLOYMENT_RELAY_CONFIG = await loadDeploymentRelayConfig()
 const SRV_DEFAULTS = {
-  url: publicWsUrl(),
-  xpub: '4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06',
-  edpub: 'b835840fd3aba7cc4519513f3bbcb1c35170f6aa97d97c16eabdb2e36710d003',
+  url: DEPLOYMENT_RELAY_CONFIG?.url || publicWsUrl(),
+  xpub: DEPLOYMENT_RELAY_CONFIG?.xpub || '4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06',
+  edpub: DEPLOYMENT_RELAY_CONFIG?.edpub || 'b835840fd3aba7cc4519513f3bbcb1c35170f6aa97d97c16eabdb2e36710d003',
 }
 
 // Mailbox sidecar — one ws_mailbox instance lives next to each ws_server.
@@ -200,6 +224,9 @@ const SRV_DEFAULTS = {
 // configures their server x_pub to the RU one in Settings, and the lookup
 // then picks the right mailbox automatically.
 const MAILBOX_DEFAULTS = {
+  ...(DEPLOYMENT_RELAY_CONFIG?.mailbox_xpub
+    ? { [SRV_DEFAULTS.xpub]: DEPLOYMENT_RELAY_CONFIG.mailbox_xpub }
+    : {}),
   // Pi server x_pub → Pi mailbox x_pub.
   '4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06':
     '56610f910d80004271ece6440e6798f268aff1e6ec85ce0e605864f1b5cefc0c',
@@ -219,9 +246,9 @@ function pickDefaultMailboxXpubFor(serverXpubHex) {
 
 function serverConfig() {
   return {
-    url:   localStorage.getItem('telefon_ws_url')   || '',
-    xpub:  localStorage.getItem('telefon_srv_xpub')  || '',
-    edpub: localStorage.getItem('telefon_srv_edpub') || '',
+    url:   localStorage.getItem('telefon_ws_url')    || SRV_DEFAULTS.url,
+    xpub:  localStorage.getItem('telefon_srv_xpub')  || SRV_DEFAULTS.xpub,
+    edpub: localStorage.getItem('telefon_srv_edpub') || SRV_DEFAULTS.edpub,
   }
 }
 
