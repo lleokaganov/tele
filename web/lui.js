@@ -237,6 +237,10 @@ function fakeRequest(btn) {
 //   reverse order via the ✕ or the Android system "back" button. On mobile each
 //   openWin pushes a history entry; popstate closes the topmost window.
 const WINS = new Set()
+
+// Re-clamp every open desktop window when the viewport changes, so shrinking
+// the browser can't leave a window half off-screen.
+addEventListener('resize', () => { for (const w of WINS) clampWin(w) })
 const winStack = []                  // open windows, oldest first → top is last
 let zSeq = 100                       // like zindexstart in the original
 function focusWin(w) {               // raise window to top, others fade (desktop)
@@ -298,9 +302,24 @@ function openWin(title, bodyHTML) {
     trapFocus(w)                           // mobile windows are modal → trap Tab inside
   } else {
     focusWin(w)
+    clampWin(w)            // a tall window must not hang off the bottom edge
   }
   focusFirst(w)            // a11y: move focus into the freshly opened window
   return w
+}
+
+// Keep a desktop window fully on screen. The cascade offsets are fixed px, so
+// a tall window (settings) opened low would run past the bottom — and .win is
+// clipped, so the overflow was simply unreachable. CSS caps the height; this
+// pulls `top` (and `left`) back into view once the real size is known.
+const WIN_MARGIN = 12
+function clampWin(w) {
+  if (isMobile()) return
+  const r = w.getBoundingClientRect()
+  const maxTop  = Math.max(WIN_MARGIN, innerHeight - r.height - WIN_MARGIN)
+  const maxLeft = Math.max(WIN_MARGIN, innerWidth  - r.width  - WIN_MARGIN)
+  w.style.top  = Math.min(Math.max(WIN_MARGIN, r.top),  maxTop)  + 'px'
+  w.style.left = Math.min(Math.max(WIN_MARGIN, r.left), maxLeft) + 'px'
 }
 
 // a11y helpers: list focusable descendants, focus the first, and a modal
@@ -380,8 +399,15 @@ function makeDraggable(w) {
   })
   bar.addEventListener('pointermove', (e) => {
     if (!drag) return
-    w.style.left = (ox + e.clientX - sx) + 'px'
-    w.style.top  = (oy + e.clientY - sy) + 'px'
+    // Clamp to the viewport: the titlebar must stay grabbable, so a window can
+    // never be dragged out to where it can't be dragged back.
+    const r = w.getBoundingClientRect()
+    const maxLeft = Math.max(WIN_MARGIN, innerWidth  - r.width  - WIN_MARGIN)
+    const maxTop  = Math.max(WIN_MARGIN, innerHeight - r.height - WIN_MARGIN)
+    const nx = ox + e.clientX - sx
+    const ny = oy + e.clientY - sy
+    w.style.left = Math.min(Math.max(WIN_MARGIN, nx), maxLeft) + 'px'
+    w.style.top  = Math.min(Math.max(WIN_MARGIN, ny), maxTop)  + 'px'
   })
   bar.addEventListener('pointerup', (e) => {
     drag = false; w.classList.remove('dragging')

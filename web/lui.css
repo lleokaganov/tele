@@ -397,6 +397,13 @@ a { color: var(--accent); text-decoration: none; }
   background: var(--bg); border: 1px solid var(--line);
   border-radius: var(--r-lg); box-shadow: var(--sh-3);
   overflow: hidden;
+  /* A window never grows past the viewport — its body scrolls instead. This is
+     NOT mobile-only: a desktop window is positioned by px offsets, so a tall
+     one (settings) used to run off the bottom of the screen with its lower half
+     unreachable — nothing to scroll, since .win itself is clipped. The JS also
+     nudges `top` up so a tall window stays fully on screen (see openWin). */
+  display: flex; flex-direction: column;
+  max-height: calc(100vh - 24px);
   animation: win-in .18s ease;
   transition: filter .2s ease, opacity .2s ease;
 }
@@ -423,7 +430,11 @@ a { color: var(--accent); text-decoration: none; }
 }
 .win-bar .x:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(255,98,0,.4); }
 .win-bar .x:hover { background: #f4eee8; color: var(--danger); }
-.win-body { padding: 16px; }
+.win-body {
+  padding: 16px;
+  flex: 1 1 auto; overflow-y: auto;      /* the body is what scrolls */
+  -webkit-overflow-scrolling: touch;
+}
 
 /* ── Centered confirm (important "Delete keys?") ──────────────────────────── */
 .confirm {
@@ -482,11 +493,10 @@ a { color: var(--accent); text-decoration: none; }
     left: 50% !important; top: 50% !important; right: auto; bottom: auto;
     transform: translate(-50%, -50%);
     width: min(92vw, 460px); max-width: 92vw;
-    /* never overflow the viewport — body scrolls inside. Subtract the device
-       safe-area insets so a tall centered window never tucks under the notch
-       or the home-indicator / gesture bar. */
+    /* Tighter cap than the base rule, and minus the device safe-area insets, so
+       a tall centered window never tucks under the notch or the gesture bar.
+       (flex/scroll themselves now come from the base .win / .win-body rules.) */
     max-height: calc(85vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
-    display: flex; flex-direction: column;
     border-radius: var(--r-lg);
     animation: win-pop .22s cubic-bezier(.2,.8,.3,1.2);
   }
@@ -494,10 +504,6 @@ a { color: var(--accent); text-decoration: none; }
   .win.inactive { filter: none; opacity: 1; }   /* no desaturate on mobile */
   .win-bar {
     cursor: default; flex: 0 0 auto;            /* titlebar pinned at the top */
-  }
-  .win-body {
-    flex: 1 1 auto; overflow-y: auto;           /* the body is what scrolls */
-    -webkit-overflow-scrolling: touch;
   }
 }
 
