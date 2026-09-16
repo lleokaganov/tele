@@ -19,6 +19,9 @@ pkg/
 # your own deployment keypair (see README "Generating server keys").
 server_keys.rs
 
+# Deployment-specific public relay config generated from local server keys.
+web/relay-config.json
+
 # Secrets / env
 .env
 *.env

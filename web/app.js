@@ -77,9 +77,41 @@ function isNativePlatform() {
     && window.Capacitor.isNativePlatform())
 }
 
-// In a Capacitor native build the page is local; network calls (preview)
-// must hit the real server. In the browser PWA, same-origin (empty base).
-const API_BASE = isNativePlatform() ? 'https://tele.karlson.ru' : ''
+// In a Capacitor native build the page is local; network calls (preview,
+// APK update checks, invite links) must hit a public server. Browser PWAs
+// stay same-origin so self-hosted installs keep their own domain in UI.
+const FALLBACK_PUBLIC_ORIGIN = 'https://tele.karlson.ru'
+const PUBLIC_ORIGIN = isNativePlatform() ? FALLBACK_PUBLIC_ORIGIN : window.location.origin
+const API_BASE = isNativePlatform() ? PUBLIC_ORIGIN : ''
+const APK_BASE = PUBLIC_ORIGIN
+function publicWsUrl() {
+  const u = new URL('/ws', PUBLIC_ORIGIN)
+  u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
+  return u.toString()
+}
+
+function isHex64(value) {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value)
+}
+
+async function loadDeploymentRelayConfig() {
+  const configUrl = isNativePlatform()
+    ? new URL('/relay-config.json', PUBLIC_ORIGIN).toString()
+    : 'relay-config.json'
+  try {
+    const res = await fetch(configUrl, { cache: 'no-store' })
+    if (!res.ok) return null
+    const cfg = await res.json()
+    const out = {}
+    if (typeof cfg.url === 'string' && cfg.url.trim()) out.url = cfg.url.trim()
+    if (isHex64(cfg.xpub)) out.xpub = cfg.xpub.toLowerCase()
+    if (isHex64(cfg.edpub)) out.edpub = cfg.edpub.toLowerCase()
+    if (isHex64(cfg.mailbox_xpub)) out.mailbox_xpub = cfg.mailbox_xpub.toLowerCase()
+    return out
+  } catch {
+    return null
+  }
+}
 
 /* =================================== toasts =================================== */
 
@@ -168,12 +200,13 @@ async function askNicknameIfMissing() {
 askNicknameIfMissing()
 document.getElementById('my-nickname').textContent = nickname || '?'
 
-// Default relay (public: tele.karlson.ru) — shown in settings; overridable
-// so anyone can point the app at their own self-hosted server.
+// Default relay — shown in settings; overridable. Browser builds default
+// to the current site, while native builds use FALLBACK_PUBLIC_ORIGIN.
+const DEPLOYMENT_RELAY_CONFIG = await loadDeploymentRelayConfig()
 const SRV_DEFAULTS = {
-  url: 'wss://tele.karlson.ru/ws',
-  xpub: '4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06',
-  edpub: 'b835840fd3aba7cc4519513f3bbcb1c35170f6aa97d97c16eabdb2e36710d003',
+  url: DEPLOYMENT_RELAY_CONFIG?.url || publicWsUrl(),
+  xpub: DEPLOYMENT_RELAY_CONFIG?.xpub || '4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06',
+  edpub: DEPLOYMENT_RELAY_CONFIG?.edpub || 'b835840fd3aba7cc4519513f3bbcb1c35170f6aa97d97c16eabdb2e36710d003',
 }
 
 // Mailbox sidecar — one ws_mailbox instance lives next to each ws_server.
@@ -191,6 +224,9 @@ const SRV_DEFAULTS = {
 // configures their server x_pub to the RU one in Settings, and the lookup
 // then picks the right mailbox automatically.
 const MAILBOX_DEFAULTS = {
+  ...(DEPLOYMENT_RELAY_CONFIG?.mailbox_xpub
+    ? { [SRV_DEFAULTS.xpub]: DEPLOYMENT_RELAY_CONFIG.mailbox_xpub }
+    : {}),
   // Pi server x_pub → Pi mailbox x_pub.
   '4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06':
     '56610f910d80004271ece6440e6798f268aff1e6ec85ce0e605864f1b5cefc0c',
@@ -210,9 +246,9 @@ function pickDefaultMailboxXpubFor(serverXpubHex) {
 
 function serverConfig() {
   return {
-    url:   localStorage.getItem('telefon_ws_url')   || '',
-    xpub:  localStorage.getItem('telefon_srv_xpub')  || '',
-    edpub: localStorage.getItem('telefon_srv_edpub') || '',
+    url:   localStorage.getItem('telefon_ws_url')    || SRV_DEFAULTS.url,
+    xpub:  localStorage.getItem('telefon_srv_xpub')  || SRV_DEFAULTS.xpub,
+    edpub: localStorage.getItem('telefon_srv_edpub') || SRV_DEFAULTS.edpub,
   }
 }
 
@@ -2708,7 +2744,7 @@ if (!NATIVE_APP && /Android/.test(navigator.userAgent)) {
   $('btn-apk').hidden = false
 }
 $('btn-apk').onclick = () => {
-  window.open('https://tele.karlson.ru/apk/telefon-latest.apk', '_blank')
+  window.open(APK_BASE + '/apk/telefon-latest.apk', '_blank')
 }
 
 // The installed version string used for update comparison. In the native APK the
@@ -2731,14 +2767,14 @@ async function checkAndUpdate() {
   const cur = await installedVersion()
   let latest = ''
   try {
-    const r = await fetch('https://tele.karlson.ru/apk/version.txt?t=' + Date.now())
+    const r = await fetch(APK_BASE + '/apk/version.txt?t=' + Date.now())
     latest = (await r.text()).trim()
   } catch { toast(t('update_check_failed'), 'error'); return }
   if (!latest) { toast(t('version_not_found'), 'error'); return }
   if (latest === cur) { toast(t('up_to_date', { ver: cur }), 'success'); return }
   if (confirm(t('new_version_q', { latest, cur }))) {
     // _system → Capacitor opens it in the external browser / DownloadManager.
-    window.open('https://tele.karlson.ru/apk/telefon-latest.apk?t=' + Date.now(), '_system')
+    window.open(APK_BASE + '/apk/telefon-latest.apk?t=' + Date.now(), '_system')
   }
 }
 
@@ -3842,7 +3878,7 @@ function initCallWindowDrag() {
 // public relay is reachable over ws); in a browser we must match the page scheme
 // (https → wss, otherwise the browser blocks mixed content).
 function smartDefaultUrl() {
-  const base = SRV_DEFAULTS.url            // e.g. wss://tele.karlson.ru/ws
+  const base = SRV_DEFAULTS.url            // e.g. current-origin wss://host/ws
   const rest = base.replace(/^wss?:\/\//, '')
   if (NATIVE_APP) return 'ws://' + rest
   return (location.protocol === 'https:' ? 'wss://' : 'ws://') + rest
@@ -4584,7 +4620,7 @@ function openSettings() {
     const cur = await installedVersion()        // real installed version (not the #build-tag placeholder)
     let latest = '', failed = false
     try {
-      const r = await fetch('https://tele.karlson.ru/apk/version.txt?t=' + Date.now())
+      const r = await fetch(APK_BASE + '/apk/version.txt?t=' + Date.now())
       latest = (await r.text()).trim()
     } catch { failed = true }
     prog.done()
@@ -4594,7 +4630,7 @@ function openSettings() {
     if (latest === cur)  { status.textContent = t('up_to_date', { ver: cur }); return }
     status.textContent = t('new_version_avail', { latest })
     if (confirm(t('new_version_q', { latest, cur }))) {
-      window.open('https://tele.karlson.ru/apk/telefon-latest.apk?t=' + Date.now(), '_system')
+      window.open(APK_BASE + '/apk/telefon-latest.apk?t=' + Date.now(), '_system')
     }
   }
 

@@ -101,15 +101,30 @@ cp server_keys.rs.example server_keys.rs
 # Any tool that emits raw 32-byte X25519 and Ed25519 keys works; the
 # notifier/wschat `keygen` subcommands print compatible hex you can
 # convert, or write a tiny Rust snippet with x25519-dalek + ed25519-dalek.
-# Then propagate the PUBLIC halves into the clients:
-#   - wasm/src/lib.rs  (or wherever the client pins server pubs)
-#   - notifier:  NOTIFIER_SERVER_X_PUB / NOTIFIER_SERVER_ED_PUB
-#   - wschat:    WSCHAT_SERVER_X_PUB   / WSCHAT_SERVER_ED_PUB
 ```
 
-`server/src/server_keys.rs` stays local and is ignored by git. If you ever
-see a non-zero secret in a committed `*.example` file, that's a bug — open
-an issue.
+`server/src/server_keys.rs` stays local and is ignored by git. Do not
+regenerate it during normal deploys: the keypair is the stable identity of
+that relay.
+
+For the browser web app, publish the public halves next to the static files:
+
+```bash
+node tools/write-relay-config.mjs --origin https://your.example.com
+# writes web/relay-config.json with /ws URL and public server keys
+```
+
+`web/relay-config.json` is deployment-specific and ignored by git. It contains
+only public material, but it should be generated from the relay's existing
+`server_keys.rs` during deploy so self-hosted domains keep matching their own
+relay identity. If the file is absent, the web app falls back to the built-in
+public relay defaults.
+
+Native and sidecar clients that pin server keys at build time still need the
+same public halves propagated to their own defaults.
+
+If you ever see a non-zero secret in a committed `*.example` file, that's a
+bug — open an issue.
 
 ## License & status
 
