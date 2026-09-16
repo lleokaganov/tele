@@ -13,9 +13,14 @@ import init, { WsSession } from './ws_wasm.js'
 const NATIVE = typeof window !== 'undefined'
   && window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function'
   && window.Capacitor.isNativePlatform()
-const NATIVE_HOST = 'tele.karlson.ru'
+const NATIVE_ORIGIN = 'https://tele.karlson.ru'
+function wsUrlFromOrigin(origin) {
+  const u = new URL('/ws', origin)
+  u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
+  return u.toString()
+}
 const DEFAULT_URL = NATIVE
-  ? `wss://${NATIVE_HOST}/ws`
+  ? wsUrlFromOrigin(NATIVE_ORIGIN)
   : (typeof location !== 'undefined'
       ? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
       : 'ws://localhost/ws')
