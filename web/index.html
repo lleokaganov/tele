@@ -8,8 +8,14 @@
   <meta name="theme-color" content="#15171c" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="telefon" />
-  <title>telefon.lleo.me</title>
+  <meta name="apple-mobile-web-app-title" content="Telefon" />
+  <title>Telefon</title>
+  <script>
+    (function () {
+      var host = window.location && window.location.host;
+      if (host) document.title = 'Telefon · ' + host;
+    })();
+  </script>
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" type="image/x-icon" href="favicon.ico" />
   <link rel="apple-touch-icon" href="apple-touch-icon.png" />
