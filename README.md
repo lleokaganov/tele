@@ -111,6 +111,34 @@ cp server_keys.rs.example server_keys.rs
 see a non-zero secret in a committed `*.example` file, that's a bug — open
 an issue.
 
+## Contributing
+
+Pull requests and issues are welcome, and they do get read. One thing to know before
+you open one: **this repository is a mirror, not the source of truth.**
+
+That is deliberate, not an accident of tooling. This is an end-to-end encrypted
+messenger — people rely on it for private conversation, and their safety depends on
+what the client actually does. A code-hosting account is exactly the kind of thing
+that gets compromised. If GitHub were the source, then compromising GitHub, or just
+this account, would mean compromising every client built from it. So the authoritative
+tree is kept off GitHub, and a publish script pushes snapshots here.
+
+In practice:
+
+- **The green Merge button is not used.** A merge here would be overwritten by the next
+  mirror sync — and, more to the point, it would not have passed through the real source.
+- **Every change is reviewed by hand and applied in the source tree first.** It shows up
+  here on the next publish, and the PR is then closed with a note on what was taken and
+  what was not.
+- **Authorship is not lost.** The PR remains the public record of who proposed what, and
+  its thread says what shipped.
+- **Small, single-purpose PRs are easiest to accept.** They are read as patches, so a
+  tight diff gets carried over quickly; a broad one gets split, and only the parts that
+  survive review ship.
+
+So a closed PR here does not mean "rejected" — read the comment. More often it means
+"applied, and already in the published build".
+
 ## License & status
 
 This is a reference implementation extracted from a working deployment.
