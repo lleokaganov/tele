@@ -10,6 +10,12 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Telefon" />
   <title>Telefon</title>
+  <script>
+    (function () {
+      var host = window.location && window.location.host;
+      if (host) document.title = 'Telefon · ' + host;
+    })();
+  </script>
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" type="image/x-icon" href="favicon.ico" />
   <link rel="apple-touch-icon" href="apple-touch-icon.png" />
@@ -37,10 +43,6 @@
         if (L.indexOf(lg) < 0) lg = 'en';
       }
       document.documentElement.lang = lg;
-      var host = (window.location && window.location.host) || '';
-      if (host && !/^(localhost|127\.0\.0\.1|\[::1\])(:|$)/.test(host)) {
-        document.title = 'Telefon \u00b7 ' + host;
-      }
     })();
   </script>
   <script>
