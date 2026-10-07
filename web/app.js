@@ -1572,7 +1572,26 @@ const call = new CallManager(client, {
     let meta = inboundMetaMem.get(fileId)
     if (!meta && persist) meta = await Storage.getFile(fileId)
     if (!meta) return
-    const blob = new Blob(arr.filter(Boolean), { type: meta.mime })
+    // A lost FILE_CHUNK used to vanish silently: filter(Boolean) closed the gap,
+    // the short blob was stored as "the file", and sendDeliveryAck below told the
+    // sender it had arrived. So verify the reassembly instead — no hole in the
+    // chunk array, and the byte count matching the size from the OFFER. No hash
+    // is needed: chunks travel inside AEAD frames, so a chunk cannot arrive
+    // corrupted, it can only fail to arrive at all.
+    const parts = Array.from(arr)
+    const got = parts.reduce((n, c) => n + (c ? c.byteLength : 0), 0)
+    const want = Number(meta.size) || 0
+    if (!parts.length || parts.some((c) => !c) || (want && got !== want)) {
+      console.warn('file reassembly incomplete — not accepting',
+                   { fileId, chunks: parts.length, got, want })
+      inboundChunks.delete(fileId)
+      inboundMetaMem.delete(fileId)
+      // Deliberately NOT acking: the sender's outbox still holds this file and
+      // replayFileSend() resends it on the next PEER_ONLINE.
+      toast(t('file_incomplete', { file: meta.name }), 'error')
+      return
+    }
+    const blob = new Blob(parts, { type: meta.mime })
     inboundChunks.delete(fileId)
     const idHex = u8hex(peerId)
     let isNew, fileObj

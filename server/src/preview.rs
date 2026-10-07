@@ -6,9 +6,13 @@
 //! Hardening:
 //!   * Only http(s) URLs.
 //!   * Reject targets that resolve to private / loopback / link-local IPs
-//!     (basic SSRF protection — no requests to 127.0.0.1, cloud metadata,
-//!     private RFC1918 etc.).
-//!   * 5-second total timeout, 1 MB max body.
+//!     (SSRF protection — no requests to 127.0.0.1, cloud metadata,
+//!     private RFC1918 etc.). Redirects are followed by hand so EVERY hop
+//!     gets the same check: a public site answering 302 to http://10.0.0.1/
+//!     would otherwise walk us straight into the LAN, and whatever title we
+//!     scraped there would come back inside the preview card.
+//!   * 5-second total timeout; body read in chunks and capped at 1 MB, so an
+//!     endless response is dropped mid-stream instead of buffered whole.
 //!   * In-memory cache, ~30 minutes per entry, ~1000 entries.
 
 use std::collections::HashMap;
@@ -25,6 +29,7 @@ const CACHE_TTL: Duration = Duration::from_secs(30 * 60);
 const CACHE_CAP: usize = 1000;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_BODY_BYTES: usize = 1024 * 1024;
+const MAX_REDIRECTS: usize = 5;
 
 #[derive(Deserialize)]
 pub struct Query {
@@ -70,19 +75,8 @@ pub async fn handler(q: web::Query<Query>) -> HttpResponse {
         Ok(u) => u,
         Err(_) => return HttpResponse::BadRequest().body("bad url"),
     };
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return HttpResponse::BadRequest().body("scheme not allowed");
-    }
-    if let Some(host) = parsed.host_str() {
-        if let Ok(addrs) = tokio::net::lookup_host(format!("{host}:80")).await {
-            for sa in addrs {
-                if is_private_or_special(&sa.ip()) {
-                    return HttpResponse::BadRequest().body("private target");
-                }
-            }
-        }
-    } else {
-        return HttpResponse::BadRequest().body("no host");
+    if let Err(why) = target_is_public(&parsed).await {
+        return HttpResponse::BadRequest().body(why);
     }
 
     let preview = match fetch_and_parse(raw_url).await {
@@ -112,6 +106,37 @@ pub async fn handler(q: web::Query<Query>) -> HttpResponse {
     }
 
     HttpResponse::Ok().json(preview)
+}
+
+/// Scheme + DNS gate for one URL: http(s) only, and every address the host
+/// resolves to must be publicly routable. Applied to the URL the client asked
+/// for and to every redirect hop.
+///
+/// Note a residual risk this does not close: between this lookup and the
+/// connection the name could resolve differently (DNS rebinding). Closing that
+/// needs connecting to a pinned IP while keeping the Host header; not done.
+async fn target_is_public(u: &url::Url) -> Result<(), &'static str> {
+    if !matches!(u.scheme(), "http" | "https") {
+        return Err("scheme not allowed");
+    }
+    let host = u.host_str().ok_or("no host")?;
+    let port = u.port_or_known_default().unwrap_or(80);
+    // A failing or empty lookup is now a refusal, not a free pass: the old
+    // `if let Ok(addrs)` let anything through whose DNS merely errored.
+    let addrs = tokio::net::lookup_host(format!("{host}:{port}"))
+        .await
+        .map_err(|_| "dns failed")?;
+    let mut seen = false;
+    for sa in addrs {
+        seen = true;
+        if is_private_or_special(&sa.ip()) {
+            return Err("private target");
+        }
+    }
+    if !seen {
+        return Err("dns empty");
+    }
+    Ok(())
 }
 
 fn is_private_or_special(ip: &IpAddr) -> bool {
@@ -161,15 +186,41 @@ async fn fetch_and_parse(url: &str) -> Result<Preview, String> {
     let client = reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
         .user_agent("telefon-preview/1.0 (+https://telefon.lleo.me)")
-        .redirect(reqwest::redirect::Policy::limited(5))
+        // Hops are walked by hand below; reqwest must not follow any itself,
+        // or it would reach an unchecked address before we ever see it.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| e.to_string())?;
 
-    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+    let mut current = url::Url::parse(url).map_err(|e| e.to_string())?;
+    let mut hops = 0usize;
+    let resp = loop {
+        let r = client
+            .get(current.clone())
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !r.status().is_redirection() {
+            break r;
+        }
+        if hops >= MAX_REDIRECTS {
+            return Err("too many redirects".to_string());
+        }
+        let loc = r
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| "redirect without Location".to_string())?;
+        // Relative Location is legal, so resolve against the current URL.
+        let next = current.join(loc).map_err(|e| e.to_string())?;
+        target_is_public(&next).await.map_err(|e| e.to_string())?;
+        current = next;
+        hops += 1;
+    };
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
-    let final_url = resp.url().to_string();
+    let final_url = current.to_string();
 
     // Charset from the Content-Type header, if the server declared one
     // (e.g. "text/html; charset=windows-1251"). Many Russian sites such
@@ -186,12 +237,16 @@ async fn fetch_and_parse(url: &str) -> Result<Preview, String> {
 
     // Read up to MAX_BODY_BYTES; bail out if larger so we never load huge
     // PDFs / videos.
+    // Stream it: `bytes()` buffered the WHOLE response first and truncated
+    // afterwards, so the 1 MB cap did not actually bound what we downloaded.
     let mut body = Vec::with_capacity(8192);
     let mut stream = resp;
-    let chunk = stream.bytes().await.map_err(|e| e.to_string())?;
-    body.extend_from_slice(&chunk);
-    if body.len() > MAX_BODY_BYTES {
-        body.truncate(MAX_BODY_BYTES);
+    while let Some(chunk) = stream.chunk().await.map_err(|e| e.to_string())? {
+        body.extend_from_slice(&chunk);
+        if body.len() >= MAX_BODY_BYTES {
+            body.truncate(MAX_BODY_BYTES);
+            break;
+        }
     }
 
     // Resolve the encoding: header charset wins; otherwise sniff a
