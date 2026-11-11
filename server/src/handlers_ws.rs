@@ -127,11 +127,7 @@ async fn connection_task(
             None => return,
         };
 
-    tracing::debug!(
-        "client {} established from {}",
-        hex::encode(client_id),
-        ip
-    );
+    tracing::debug!("client established");
     // Tell anyone watching this X_pub that the peer is now online.
     broadcast_presence(&hub, &x_pub, true).await;
 
@@ -178,11 +174,7 @@ async fn connection_task(
                 )
                 .await
                 {
-                    tracing::warn!(
-                        "routing error from {}: {:?}",
-                        hex::encode(client_id),
-                        e
-                    );
+                    tracing::warn!("routing error: {:?}", e);
                 }
             }
             other => {
@@ -197,7 +189,7 @@ async fn connection_task(
         h.remove_all_subscriptions(&client_id);
     }
     broadcast_presence(&hub, &x_pub, false).await;
-    tracing::debug!("client {} disconnected", hex::encode(client_id));
+    tracing::debug!("client disconnected");
 }
 
 #[derive(Debug)]
@@ -385,10 +377,7 @@ async fn apply_introduce(
         h.get(&target_id).map(|s| (s.x_pub, s.k_s2c, s.ws.clone()))
     };
     let Some((target_x_pub, target_k_s2c, mut target_ws)) = target else {
-        tracing::debug!(
-            "introduce: target {} not online",
-            hex::encode(target_id)
-        );
+        tracing::debug!("introduce: target not online");
         return Ok(()); // silently drop — caller may retry later
     };
 

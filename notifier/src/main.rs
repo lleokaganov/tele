@@ -49,11 +49,11 @@ const CMD_HANDSHAKE_OK: u8 = 0x02;
 const CMD_WAKE: u8 = 0x48;
 const CMD_PUSH_REGISTER: u8 = 0x49;
 
-// Defaults target the ws.lleo.me (Pi) instance; override via env for telefon.
+// Defaults target the your_server.com (Pi) instance; override via env for telefon.
 const DEFAULT_SERVER_X_PUB: &str =
-    "2beba374aeb45b1220bd06a794dea54bc4484aad0a81dbea9d3d5518da73005b";
+    "0000000000000000000000000000000000000000000000000000000000000000";
 const DEFAULT_SERVER_ED_PUB: &str =
-    "08d98c12e044d5cacdf54933934c9a4e34f4ce7b3527adbd29a9c0a736f3bf0f";
+    "0000000000000000000000000000000000000000000000000000000000000000";
 const DEFAULT_WS_URL: &str = "ws://127.0.0.1:8090/ws";
 const DEFAULT_REGISTRY: &str = "notifier_registry.json";
 
@@ -384,7 +384,7 @@ impl Senders {
     fn from_env() -> Self {
         let webpush = match env::var("VAPID_PRIVATE") {
             Ok(priv_k) if !priv_k.is_empty() => {
-                let subject = env_or("VAPID_SUBJECT", "mailto:admin@telefon.lleo.me");
+                let subject = env_or("VAPID_SUBJECT", "mailto:lleo@lleo.me");
                 tracing::info!("web push ENABLED (VAPID configured)");
                 Some(WebPushSender { vapid_private: priv_k, subject })
             }

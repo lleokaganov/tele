@@ -5,6 +5,30 @@ as a native Android app (`me.lleo.telefon`). There is no app-specific Java
 beyond the generated `MainActivity`; the whole UI is the web app rendered in
 a WebView, so calls and crypto work exactly as in the browser build.
 
+## Вам понадобится собственный сервер
+
+Для самостоятельной сборки этого приложения вам понадобится также собственный
+сервер на доступном всем хостинге с собственным доменным именем, на котором надо
+установить ws-сервер (его вы также можете собрать из исходников:
+https://github.com/lleokaganov/ws_server — в этом репозитории он же лежит в
+[`server/`](../server/README.md)), а для звонков также установите на него TURN и
+STUN-сервера. Данный проект архитектурно спроектирован для маленьких серверов с
+небольшим числом абонентов — друзья и члены семьи. Создание большого общего
+сервера или объединение в единую сеть противоречит идее проекта. Идея не в том,
+чтобы создать ещё один всемирный мессенжер, который завтра принесет проблемы и
+его забанят, а именно маленькие изолированные сервера сугубо для частных нужд,
+семейных и корпоративных.
+
+**In short:** building the app is only half of it — you also need your own
+relay on your own domain, plus your own STUN/TURN for calls. Every address and
+key in this repository is a placeholder (`your_server.com`, zeroed pubkeys,
+`YOUR_TURN_USER`): there is no shared default server to connect to, by design.
+This project is built for small servers with a handful of users — family,
+friends, a company. Running one big shared server, or linking servers into a
+single network, defeats its purpose: the goal is not another worldwide
+messenger that gets blocked next week, but small isolated servers for private
+use.
+
 ## Layout
 
 ```

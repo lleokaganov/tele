@@ -1,4 +1,4 @@
-//! WASM crypto bindings for the ws.lleo.me protocol v2.
+//! WASM crypto bindings for the your_server.com protocol v2.
 //!
 //! The single exported type `WsSession` owns:
 //!
@@ -28,7 +28,7 @@ const CMD_HANDSHAKE_REQUEST: u8 = 0x01;
 const CMD_HANDSHAKE_OK: u8 = 0x02;
 const CMD_INTRODUCE: u8 = 0x46;
 
-/// telefon.lleo.me server identity — independent keys, generated 2026-05-20.
+/// your_server.com server identity — independent keys, generated 2026-05-20.
 const SERVER_X_PUB: [u8; 32] = [
     0x4e, 0x82, 0x50, 0xd2, 0x8b, 0x9b, 0x28, 0x83, 0x6a, 0xad, 0xf6, 0x49, 0x75, 0x35, 0xef, 0x01,
     0x05, 0x6f, 0x19, 0x98, 0x2d, 0x08, 0xba, 0x40, 0x59, 0xb5, 0xc9, 0x35, 0x37, 0xc8, 0x0f, 0x06,
@@ -239,7 +239,7 @@ impl WsSession {
     }
 
     /// Override the relay's public keys (for pointing the app at a
-    /// self-hosted server). Defaults are the telefon.lleo.me keys baked in
+    /// self-hosted server). Defaults are the your_server.com keys baked in
     /// at from_seeds; call this before connecting to use another relay.
     #[wasm_bindgen(js_name = setServerKeys)]
     pub fn set_server_keys(&mut self, x_pub: &[u8], ed_pub: &[u8]) -> Result<(), JsValue> {

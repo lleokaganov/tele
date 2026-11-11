@@ -79,7 +79,7 @@ function isNativePlatform() {
 
 // In a Capacitor native build the page is local; network calls (preview)
 // must hit the real server. In the browser PWA, same-origin (empty base).
-const API_BASE = isNativePlatform() ? 'https://tele.karlson.ru' : ''
+const API_BASE = isNativePlatform() ? 'https://your_server.com' : ''
 
 /* =================================== toasts =================================== */
 
@@ -168,12 +168,12 @@ async function askNicknameIfMissing() {
 askNicknameIfMissing()
 document.getElementById('my-nickname').textContent = nickname || '?'
 
-// Default relay (public: tele.karlson.ru) — shown in settings; overridable
+// Default relay (public: your_server.com) — shown in settings; overridable
 // so anyone can point the app at their own self-hosted server.
 const SRV_DEFAULTS = {
-  url: 'wss://tele.karlson.ru/ws',
-  xpub: '4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06',
-  edpub: 'b835840fd3aba7cc4519513f3bbcb1c35170f6aa97d97c16eabdb2e36710d003',
+  url: 'wss://your_server.com/ws',
+  xpub: '0000000000000000000000000000000000000000000000000000000000000000',
+  edpub: '0000000000000000000000000000000000000000000000000000000000000000',
 }
 
 // Mailbox sidecar — one ws_mailbox instance lives next to each ws_server.
@@ -183,25 +183,16 @@ const SRV_DEFAULTS = {
 // see "Mailbox" section in openSettings(). See ws_mailbox/doc/PROTOCOL.md
 // (Deploy section) for the canonical key list.
 //
-//   Pi  (ws.lleo.me / tele.lleo.me / tele.karlson.ru): mailbox 56610f91...
-//   RU VPS (telefon.lleo.me independent instance):     mailbox 908a3893...
+//   your_server.com: mailbox 908a3893... / ed 923fb08a...
 //
-// Today the only default we actually ship is the Pi entry (SRV_DEFAULTS.xpub
-// is the Pi server). The RU row will activate the day a user manually
-// configures their server x_pub to the RU one in Settings, and the lookup
-// then picks the right mailbox automatically.
+// This is the only relay we run, so it is the only row here. The former
+// home-Pi install (your_server.com, mailbox 56610f91... / ed ade527...) was shut
+// down 18.10.2026 together with its relay — do NOT put those keys back,
+// they route offline STORE requests into a void that answers nothing.
 const MAILBOX_DEFAULTS = {
-  // Pi server x_pub → Pi mailbox x_pub.
-  '4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06':
-    '56610f910d80004271ece6440e6798f268aff1e6ec85ce0e605864f1b5cefc0c',
-  // RU VPS server x_pub → RU mailbox x_pub. The RU server x_pub is the
-  // independent identity generated for telefon.lleo.me. Listed here for
-  // forward-compat; today no client ships RU as its default endpoint.
-  // (See ws_mailbox/doc/PROTOCOL.md → Deploy → RU VPS.)
-  // Filled in once the RU server's full x_pub is known to the client.
-  // TODO: the wasm module bakes its SERVER_X_PUB to the Pi today; if a
-  // future build switches to the RU server, replace the key below with the
-  // matching RU server x_pub.
+  // karlson server x_pub → karlson mailbox x_pub.
+  '0000000000000000000000000000000000000000000000000000000000000000':
+    '0000000000000000000000000000000000000000000000000000000000000000',
 }
 
 function pickDefaultMailboxXpubFor(serverXpubHex) {
@@ -415,6 +406,7 @@ let lastContactMenuTs = 0  // guards the contact tap from firing after long-pres
 function attachLongPress(li, idHex) {
   let timer = null
   let startX = 0, startY = 0
+  let openedByThisPress = false
   const clear = () => { if (timer) { clearTimeout(timer); timer = null } }
   li.addEventListener('pointerdown', (e) => {
     // Primary button / touch only.
@@ -424,16 +416,28 @@ function attachLongPress(li, idHex) {
     timer = setTimeout(() => {
       timer = null
       lastContactMenuTs = Date.now()
-      openContactMenu(idHex, e.clientX, e.clientY)
+      openedByThisPress = true
+      // deferArm: the finger is still down; arming now would let its own
+      // release close the menu immediately.
+      openContactMenu(idHex, e.clientX, e.clientY, true)
     }, LONGPRESS_MS)
   })
   li.addEventListener('pointermove', (e) => {
     if (!timer) return
     if (Math.hypot(e.clientX - startX, e.clientY - startY) > LONGPRESS_MOVE) clear()
   })
-  li.addEventListener('pointerup', clear)
-  li.addEventListener('pointercancel', clear)
-  li.addEventListener('pointerleave', clear)
+  // setTimeout(0) from pointerup runs AFTER the click that release generates,
+  // so the closers are armed only once that click has already gone by.
+  const release = () => {
+    clear()
+    if (openedByThisPress) {
+      openedByThisPress = false
+      setTimeout(() => armContactMenuClosers(), 0)
+    }
+  }
+  li.addEventListener('pointerup', release)
+  li.addEventListener('pointercancel', release)
+  li.addEventListener('pointerleave', release)
   // Desktop: right-click is the natural equivalent of a long-press.
   li.addEventListener('contextmenu', (e) => {
     e.preventDefault()
@@ -451,7 +455,9 @@ function closeContactMenu() {
 }
 
 // Small action-sheet anchored near the press point. Reuses the .msg-menu look.
-function openContactMenu(idHex, x, y) {
+let armContactMenuClosers = () => {}
+
+function openContactMenu(idHex, x, y, deferArm = false) {
   closeContactMenu()
   if (!peerBook[idHex]) return
   const menu = document.createElement('div')
@@ -476,11 +482,19 @@ function openContactMenu(idHex, x, y) {
   menu.style.left = px + 'px'
   menu.style.top  = py + 'px'
   contactMenuEl = menu
-  // Close on the next outside interaction.
-  setTimeout(() => {
+  // Close on the next outside interaction — but NOT while the finger that
+  // opened the menu is still down. Releasing it fires a click on document,
+  // which used to close the menu the instant it appeared: on Android the menu
+  // flashed and vanished, and only an improbably fast release (letting go
+  // before these listeners were armed) left it on screen. The tap-through to
+  // the chat was already guarded by lastContactMenuTs; this was not.
+  // So a long-press arms the closers later, from its own pointerup.
+  armContactMenuClosers = () => {
+    armContactMenuClosers = () => {}
     document.addEventListener('click',       closeContactMenu, { once: true })
     document.addEventListener('contextmenu', closeContactMenu, { once: true })
-  }, 0)
+  }
+  if (!deferArm) setTimeout(armContactMenuClosers, 0)
 }
 
 // Copy this contact's invite link — same shape as settings → "share my invite",
@@ -1429,12 +1443,42 @@ function updateMessageBody(msgId, newBody) {
   maybeAttachPreview(row, { id: msgId, body: newBody, dir: row.classList.contains('me') ? 'out' : 'in' })
 }
 
+/* ============================== media permissions ============================== */
+
+// A call could not open the microphone or the camera. The browser only writes
+// that to the console, so until now a blocked microphone looked like a flaky
+// network: the call connected, carried nothing and ended by itself ~20 s later.
+// A fatal problem gets a window with what to do about it (a toast is gone in
+// three seconds and these users are not the ones who read logs); a lost camera
+// gets a toast, because the call itself carries on without it.
+function reportMediaProblem({ device, kind, fatal, blocked }) {
+  if (!fatal) { toast(t('media_camera_off'), 'error', 7000); return }
+  const why = kind === 'missing' ? t('media_mic_missing')
+            : kind === 'busy'    ? t('media_mic_busy')
+            : kind === 'denied'  ? t('media_mic_denied')
+            :                      t('media_mic_unknown')
+  // How to undo it differs by shell: in a browser the permission hangs off the
+  // address bar, in the installed app off the Android app settings. And a
+  // permission the browser has latched to "denied" will never prompt again, so
+  // saying "allow it when asked" there would be advice that cannot be followed.
+  const how = isNativePlatform() ? t('media_fix_app')
+            : blocked            ? t('media_fix_blocked')
+            :                      t('media_fix_prompt')
+  lui.win(t('media_fail_title'),
+    `<div class="card"><p>${escapeHtml(why)}</p><p class="muted">${escapeHtml(how)}</p></div>`)
+}
+
 /* =================================== call manager =================================== */
 
 const call = new CallManager(client, {
   log: (s) => console.log(s),
+  onMediaProblem: reportMediaProblem,
   onLocalStream:  (s) => {
     $('my-video').srcObject = s || null
+    // Mirror the self-view only for the front camera. A real mirror is what you
+    // expect of your own face; the back camera shows the world, and flipping
+    // that just makes text read backwards.
+    $('my-video').classList.toggle('back-cam', call.preferredFacing === 'environment')
     // Apply persisted mic/video preferences to the live call once. _openMedia
     // starts everything ON, so we only need to switch things OFF when the saved
     // preference is OFF. Guarded by callPrefsApplied so a later device change
@@ -1713,6 +1757,7 @@ function refreshGroupHeader() {
 
 const groupCall = new GroupCallManager(client, {
   log: (s) => console.log(s),
+  onMediaProblem: reportMediaProblem,
   onLocalStream: (s) => {
     const v = groupTile(u8hex(client.myId), nickname || t('unnamed'), true).querySelector('video')
     v.srcObject = s || null
@@ -1835,16 +1880,11 @@ function ensureMailboxPeer() {
   // its full 32-byte x_pub as a placeholder — addPeer will reject if
   // ed_pub isn't a valid curve point, which lets us notice.
   // (TODO: ship mailbox ed_pub here once it's hard-wired in PROTOCOL.md
-  //  — see the deploy table. Today both ed_pubs are listed: Pi has
-  //  ade527... and RU has 923fb0... .)
+  //  — see the deploy table.)
   let edPubHex = ''
-  // Pi mailbox known ed_pub:
-  if (xpubHex === '56610f910d80004271ece6440e6798f268aff1e6ec85ce0e605864f1b5cefc0c') {
-    edPubHex = 'ade527278a40c20f0848c1ff8f2935f7e3c1ee1775dc196023c726c9dea53355'
-  }
-  // RU mailbox known ed_pub:
-  if (xpubHex === '908a3893e8ca22f09dc11a2377e24cce07446c0cf8da791f095a6056495a1a0a') {
-    edPubHex = '923fb08a65db92bdf9254d5ab5e945541a8e8930a474d9524176c006d6e4cad2'
+  // karlson mailbox known ed_pub:
+  if (xpubHex === '0000000000000000000000000000000000000000000000000000000000000000') {
+    edPubHex = '0000000000000000000000000000000000000000000000000000000000000000'
   }
   if (!edPubHex) return null    // unknown mailbox — can't verify signatures
   try {
@@ -2727,7 +2767,7 @@ if (!NATIVE_APP && /Android/.test(navigator.userAgent)) {
   $('btn-apk').hidden = false
 }
 $('btn-apk').onclick = () => {
-  window.open('https://tele.karlson.ru/apk/telefon-latest.apk', '_blank')
+  window.open('https://your_server.com/apk/telefon-latest.apk', '_blank')
 }
 
 // The installed version string used for update comparison. In the native APK the
@@ -2750,14 +2790,14 @@ async function checkAndUpdate() {
   const cur = await installedVersion()
   let latest = ''
   try {
-    const r = await fetch('https://tele.karlson.ru/apk/version.txt?t=' + Date.now())
+    const r = await fetch('https://your_server.com/apk/version.txt?t=' + Date.now())
     latest = (await r.text()).trim()
   } catch { toast(t('update_check_failed'), 'error'); return }
   if (!latest) { toast(t('version_not_found'), 'error'); return }
   if (latest === cur) { toast(t('up_to_date', { ver: cur }), 'success'); return }
   if (confirm(t('new_version_q', { latest, cur }))) {
     // _system → Capacitor opens it in the external browser / DownloadManager.
-    window.open('https://tele.karlson.ru/apk/telefon-latest.apk?t=' + Date.now(), '_system')
+    window.open('https://your_server.com/apk/telefon-latest.apk?t=' + Date.now(), '_system')
   }
 }
 
@@ -3523,11 +3563,11 @@ async function sendFile(file) {
   if (persist) {
     await Storage.saveFileMeta({ ...meta, thumb_blob })
     await Storage.saveFileBlob(fileId, file)  // we already have the blob locally
-    await DB.add('telefon.lleo.me', 'messages', {
+    await DB.add('telefon', 'messages', {
       id: msgId, peer_id: currentPeerId, dir: 'out',
       body: `%${fileId}`, ts: Date.now(), status: 'pending',
     })
-    await DB.add('telefon.lleo.me', 'outbox', { id: msgId, attempts: 0, last_try_ts: 0 })
+    await DB.add('telefon', 'outbox', { id: msgId, attempts: 0, last_try_ts: 0 })
   } else {
     fileObj = { id: fileId, name: meta.name, mime: meta.mime, size: meta.size, blob: file, thumb_blob }
   }
@@ -3861,7 +3901,7 @@ function initCallWindowDrag() {
 // public relay is reachable over ws); in a browser we must match the page scheme
 // (https → wss, otherwise the browser blocks mixed content).
 function smartDefaultUrl() {
-  const base = SRV_DEFAULTS.url            // e.g. wss://tele.karlson.ru/ws
+  const base = SRV_DEFAULTS.url            // e.g. wss://your_server.com/ws
   const rest = base.replace(/^wss?:\/\//, '')
   if (NATIVE_APP) return 'ws://' + rest
   return (location.protocol === 'https:' ? 'wss://' : 'ws://') + rest
@@ -4603,7 +4643,7 @@ function openSettings() {
     const cur = await installedVersion()        // real installed version (not the #build-tag placeholder)
     let latest = '', failed = false
     try {
-      const r = await fetch('https://tele.karlson.ru/apk/version.txt?t=' + Date.now())
+      const r = await fetch('https://your_server.com/apk/version.txt?t=' + Date.now())
       latest = (await r.text()).trim()
     } catch { failed = true }
     prog.done()
@@ -4613,7 +4653,7 @@ function openSettings() {
     if (latest === cur)  { status.textContent = t('up_to_date', { ver: cur }); return }
     status.textContent = t('new_version_avail', { latest })
     if (confirm(t('new_version_q', { latest, cur }))) {
-      window.open('https://tele.karlson.ru/apk/telefon-latest.apk?t=' + Date.now(), '_system')
+      window.open('https://your_server.com/apk/telefon-latest.apk?t=' + Date.now(), '_system')
     }
   }
 

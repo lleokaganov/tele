@@ -18,7 +18,7 @@ serde_json = "1"
 # runtime
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "io-std", "io-util", "signal", "fs"] }
 
-# ws client with TLS (wss:// to telefon.lleo.me)
+# ws client with TLS (wss:// to your_server.com)
 tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 

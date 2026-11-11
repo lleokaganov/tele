@@ -1,5 +1,5 @@
 // WebRTC wrapper. Signalling goes through the WsClient using these cmd
-// codes (defined in PROTOCOL.md for ws.lleo.me v2):
+// codes (defined in PROTOCOL.md for your_server.com v2):
 //
 //   0x30 CALL_REQUEST     (initiator → callee, body: empty)
 //   0x31 CALL_ACCEPT      (callee → initiator)
@@ -34,15 +34,19 @@ export const MSG_EDIT_CMD     = 0x29
 export const READ_ACK_CMD     = 0x2A
 
 // Single, locally-operated STUN + TURN inside the project's infra.
-const TURN_SERVERS = [
-  { urls: 'stun:telefon.lleo.me:3478' },
+export const TURN_SERVERS = [
+  // Your own STUN/TURN. Calls between peers on different NATs need a TURN
+  // relay; STUN alone only works when at least one side is reachable.
+  // Put your coturn host here and the long-term credentials you configured
+  // in /etc/turnserver.conf (lt-cred-mech + a `user=` line).
+  { urls: 'stun:your_server.com:3478' },
   {
     urls: [
-      'turn:telefon.lleo.me:3478?transport=udp',
-      'turn:telefon.lleo.me:3478?transport=tcp',
+      'turn:your_server.com:3478?transport=udp',
+      'turn:your_server.com:3478?transport=tcp',
     ],
-    username:   '68ac1de52dedfab6',
-    credential: 'iHBRacAQfp1yUG6AILAxg6eOIGQejAiy',
+    username:   'YOUR_TURN_USER',
+    credential: 'YOUR_TURN_PASSWORD',
   },
 ]
 

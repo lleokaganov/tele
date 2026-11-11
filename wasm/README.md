@@ -1,6 +1,6 @@
 # ws_wasm
 
-WASM crypto module for the `ws.lleo.me` protocol v2. All private keys live
+WASM crypto module for the `your_server.com` protocol v2. All private keys live
 inside WASM memory and never cross the JS↔WASM boundary; JS only sees
 ready-to-send byte arrays and parsed incoming objects.
 
@@ -53,7 +53,7 @@ Set `onState`, `onConsole`, `onPeer`, `onServer` callbacks and call
 ## Server endpoint (production)
 
 ```
-ws://ws.lleo.me/api0
+ws://your_server.com/api0
 ```
 
 DNS-only routing (no Cloudflare proxy, no TLS — payload-level encryption

@@ -49,6 +49,30 @@ The full wire format is documented in
 | [`notifier/`](notifier/) | Push gateway: a separate relay peer that turns WAKE frames into push notifications. |
 | [`claude-client/`](claude-client/) | `wschat` — a generic encrypted-chat CLI bridge, plus a guide for AI agents. |
 
+## Вам понадобится собственный сервер / You need your own server
+
+Для самостоятельной сборки этого приложения вам понадобится также собственный
+сервер на доступном всем хостинге с собственным доменным именем, на котором надо
+установить ws-сервер (его вы также можете собрать из исходников:
+https://github.com/lleokaganov/ws_server — в этом репозитории он же лежит в
+[`server/`](../server/README.md)), а для звонков также установите на него TURN и
+STUN-сервера. Данный проект архитектурно спроектирован для маленьких серверов с
+небольшим числом абонентов — друзья и члены семьи. Создание большого общего
+сервера или объединение в единую сеть противоречит идее проекта. Идея не в том,
+чтобы создать ещё один всемирный мессенжер, который завтра принесет проблемы и
+его забанят, а именно маленькие изолированные сервера сугубо для частных нужд,
+семейных и корпоративных.
+
+**In short:** building the app is only half of it — you also need your own
+relay on your own domain, plus your own STUN/TURN for calls. Every address and
+key in this repository is a placeholder (`your_server.com`, zeroed pubkeys,
+`YOUR_TURN_USER`): there is no shared default server to connect to, by design.
+This project is built for small servers with a handful of users — family,
+friends, a company. Running one big shared server, or linking servers into a
+single network, defeats its purpose: the goal is not another worldwide
+messenger that gets blocked next week, but small isolated servers for private
+use.
+
 ## Build & run
 
 Each section has its own README with details. Quick map:

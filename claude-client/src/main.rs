@@ -23,8 +23,8 @@
 //!                                   real newline (human-typed bridges). Off by
 //!                                   default so machine-written text keeps its
 //!                                   backslashes
-//!   WS_URL                          default wss://telefon.lleo.me/ws
-//!   WSCHAT_SERVER_X_PUB / _ED_PUB   default telefon.lleo.me server keys
+//!   WS_URL                          default wss://your_server.com/ws
+//!   WSCHAT_SERVER_X_PUB / _ED_PUB   default your_server.com server keys
 //!   WSCHAT_MAILBOX_X_PUB            mailbox X25519 pubkey (hex32). If set and
 //!                                   non-empty, offline messages are STORE'd
 //!                                   in the mailbox; on connect we FETCH_NEXT
@@ -85,10 +85,10 @@ const MBX_DELETED: u8 = 0x15;
 const MBX_NOT_FOUND: u8 = 0x16;
 
 const DEFAULT_SERVER_X_PUB: &str =
-    "4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06";
+    "0000000000000000000000000000000000000000000000000000000000000000";
 const DEFAULT_SERVER_ED_PUB: &str =
-    "b835840fd3aba7cc4519513f3bbcb1c35170f6aa97d97c16eabdb2e36710d003";
-const DEFAULT_WS_URL: &str = "wss://telefon.lleo.me/ws";
+    "0000000000000000000000000000000000000000000000000000000000000000";
+const DEFAULT_WS_URL: &str = "wss://your_server.com/ws";
 
 // ============================ identity / crypto ============================
 

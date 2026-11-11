@@ -8,7 +8,7 @@ identified by an 8-byte key on the wire.
 ## Endpoint
 
 ```
-ws://ws.lleo.me/api0
+ws://your_server.com/api0
 ```
 
 Plain WebSocket on port 80. The transport is unencrypted by design —
@@ -16,7 +16,7 @@ every payload travelling across it is already authenticated and encrypted
 end-to-end between the two clients. The server itself cannot decrypt the
 relayed payloads.
 
-DNS-only routing (no Cloudflare proxy): `ws.lleo.me` is a CNAME to
+DNS-only routing (no Cloudflare proxy): `your_server.com` is a CNAME to
 `q.lleo.me` which resolves to the server's public IP. Cloudflare tunnels
 are intentionally avoided because they are blocked from inside Russia,
 where part of the target audience lives.
@@ -31,8 +31,8 @@ Long-term keypairs, hard-coded in the server binary. Clients must embed
 the public halves verbatim.
 
 ```
-X25519  public:  2beba374aeb45b1220bd06a794dea54bc4484aad0a81dbea9d3d5518da73005b
-Ed25519 public:  08d98c12e044d5cacdf54933934c9a4e34f4ce7b3527adbd29a9c0a736f3bf0f
+X25519  public:  0000000000000000000000000000000000000000000000000000000000000000
+Ed25519 public:  0000000000000000000000000000000000000000000000000000000000000000
 ```
 
 The server's X25519 key is used to encrypt the client→server handshake

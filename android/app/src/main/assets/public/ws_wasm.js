@@ -441,7 +441,7 @@ export class WsSession {
     }
     /**
      * Override the relay's public keys (for pointing the app at a
-     * self-hosted server). Defaults are the telefon.lleo.me keys baked in
+     * self-hosted server). Defaults are the your_server.com keys baked in
      * at from_seeds; call this before connecting to use another relay.
      * @param {Uint8Array} x_pub
      * @param {Uint8Array} ed_pub

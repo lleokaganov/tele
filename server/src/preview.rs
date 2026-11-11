@@ -185,7 +185,7 @@ fn sniff_meta_charset(body: &[u8]) -> Option<String> {
 async fn fetch_and_parse(url: &str) -> Result<Preview, String> {
     let client = reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
-        .user_agent("telefon-preview/1.0 (+https://telefon.lleo.me)")
+        .user_agent("telefon-preview/1.0 (+https://your_server.com)")
         // Hops are walked by hand below; reqwest must not follow any itself,
         // or it would reach an unchecked address before we ever see it.
         .redirect(reqwest::redirect::Policy::none())

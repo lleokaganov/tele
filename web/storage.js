@@ -14,7 +14,7 @@
 //   files      { id, mime, name, size, blob, thumb_blob }
 //                actual file bytes — populated by Stage B (chunked transfer).
 
-const DB_NAME = 'telefon.lleo.me'
+const DB_NAME = 'telefon'
 const TABLES  = ['messages', 'outbox', 'files']
 
 // Monotonic per-device save counter. Used to break `ts` ties so a batch of

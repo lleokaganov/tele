@@ -198,6 +198,11 @@ textarea#text-input { resize: none; max-height: 120px; overflow-y: auto; line-he
   z-index: 2;
   transform: scaleX(-1);   /* mirror the self-view, like a real mirror */
 }
+/* ...but only for the front camera: the back camera films the world, and
+   mirroring it reverses any text in frame. */
+.my-video.back-cam {
+  transform: none;
+}
 /* Before the peer's video arrives, the self-view fills the whole window so you
    can clearly see and prepare yourself; it shrinks to the corner PiP on connect. */
 .call-window.no-remote .my-video {

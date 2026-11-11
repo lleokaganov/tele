@@ -2,7 +2,7 @@
 name = "ws_wasm"
 version = "0.1.0"
 edition = "2024"
-description = "WASM crypto for ws.lleo.me protocol v2"
+description = "WASM crypto for your_server.com protocol v2"
 
 [lib]
 crate-type = ["cdylib"]

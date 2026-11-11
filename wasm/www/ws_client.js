@@ -13,7 +13,7 @@ import init, { WsSession } from './ws_wasm.js'
 const NATIVE = typeof window !== 'undefined'
   && window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function'
   && window.Capacitor.isNativePlatform()
-const NATIVE_HOST = 'tele.karlson.ru'
+const NATIVE_HOST = 'your_server.com'
 const DEFAULT_URL = NATIVE
   ? `wss://${NATIVE_HOST}/ws`
   : (typeof location !== 'undefined'
@@ -60,7 +60,7 @@ function ensureWasm() {
 export class WsClient {
   /**
    * @param {object} opts
-   * @param {string} [opts.url] - WS endpoint, default ws://ws.lleo.me/api0
+   * @param {string} [opts.url] - WS endpoint, default ws://your_server.com/api0
    * @param {Uint8Array} [opts.xSeed] - persisted X25519 seed (32 bytes). If absent, a fresh one is generated.
    * @param {Uint8Array} [opts.edSeed] - persisted Ed25519 seed (32 bytes). If absent, a fresh one is generated.
    */

@@ -21,7 +21,7 @@
 //     offerer. Deterministic on both sides ⇒ no glare, no duplicate peer
 //     connections.
 
-import { TURN_SERVERS } from './webrtc.js'
+import { TURN_SERVERS, openUserMedia } from './webrtc.js'
 
 export const GROUP = {
   INVITE: 0x38,  // host → invitee : { room, roster:[{id,qr,label}], host }
@@ -105,7 +105,10 @@ export class GroupCallManager {
     roster = roster.slice(0, MAX_MEMBERS)
     this.room = randomRoom()
     this._ingestRoster(roster)
-    await this._openMedia()
+    // No microphone → don't open the room at all; nobody gets invited into a
+    // call we cannot speak in. _teardown puts `active` back to false.
+    try { await this._openMedia() }
+    catch (e) { this.ui.log('group media: ' + e); this._teardown('group:ended'); return }
     this.ui.onState('group:active')
     // Invite every remote member; I (host) am active immediately.
     const body = enc(JSON.stringify({
@@ -127,7 +130,8 @@ export class GroupCallManager {
     if (this.active) { this.ui.log('group: busy'); return }
     this.room = inv.room
     this._ingestRoster(inv.roster)
-    await this._openMedia()
+    try { await this._openMedia() }
+    catch (e) { this.ui.log('group media: ' + e); this._teardown('group:ended'); return }
     this.ui.onState('group:active')
     // Announce myself to everyone; the JOIN-echo gossip wires up the mesh.
     this._broadcast(GROUP.JOIN, { room: this.room })
@@ -311,6 +315,12 @@ export class GroupCallManager {
   async _connectTo(m) {
     if (m.pc) return
     this._makePeer(m)   // _makePeer attaches our local tracks (single source of truth)
+    // Without a camera of our own the offer carries no video m-line, so the
+    // other member could not send theirs either — ask for it receive-only.
+    if (!this.localStream?.getVideoTracks().length) {
+      try { m.pc.addTransceiver('video', { direction: 'recvonly' }) }
+      catch (e) { this.ui.log('recvonly video: ' + e) }
+    }
     const offer = await m.pc.createOffer()
     await m.pc.setLocalDescription(offer)
     this._sendTo(m, GROUP.OFFER, { room: this.room, sdp: offer.sdp })
@@ -380,13 +390,14 @@ export class GroupCallManager {
 
   async _openMedia() {
     if (this.localStream) return
-    try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: this.preferredFacing }, height: { ideal: GROUP_VIDEO_HEIGHT } },
-        audio: true,
-      })
-      this.ui.onLocalStream(this.localStream)
-    } catch (e) { this.ui.log(`x getUserMedia: ${e}`); throw e }
+    // Same contract as 1:1 (see openUserMedia): a refused camera degrades to
+    // audio only and is reported, a refused microphone throws and the caller
+    // backs out of the room instead of joining it mute.
+    this.localStream = await openUserMedia(
+      { facingMode: { ideal: this.preferredFacing }, height: { ideal: GROUP_VIDEO_HEIGHT } },
+      this.ui,
+    )
+    this.ui.onLocalStream(this.localStream)
   }
 
   _sendTo(m, cmd, obj) { this.client._sendPeer(m.id, cmd, enc(JSON.stringify(obj))) }

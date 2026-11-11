@@ -1,5 +1,5 @@
 {
-  "name": "telefon.lleo.me",
+  "name": "telefon",
   "short_name": "telefon",
   "description": "End-to-end encrypted voice and video calls, peer-to-peer with a tiny relay.",
   "start_url": "/",

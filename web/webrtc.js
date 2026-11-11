@@ -1,5 +1,5 @@
 // WebRTC wrapper. Signalling goes through the WsClient using these cmd
-// codes (defined in PROTOCOL.md for ws.lleo.me v2):
+// codes (defined in PROTOCOL.md for your_server.com v2):
 //
 //   0x30 CALL_REQUEST     (initiator → callee, body: empty)
 //   0x31 CALL_ACCEPT      (callee → initiator)
@@ -16,6 +16,18 @@
 //
 // One active call at a time. The UI is responsible for offering the
 // "incoming call" prompt and binding the right buttons.
+
+/** Pin the call audio route through the native side (Android only).
+ *
+ *  WebRTC in the WebView leaves the device in communication mode when a call
+ *  ends, so the NEXT call comes out of the earpiece instead of the loudspeaker
+ *  and only an app restart fixes it. MainActivity exposes TelefonAudio for
+ *  this; on the web (and on an older APK without it) the object is absent and
+ *  this is a no-op. Never throws — a routing hiccup must not end a call.
+ */
+function nativeSpeaker(on) {
+  try { window.TelefonAudio?.setSpeaker?.(!!on) } catch { /* no bridge here */ }
+}
 
 export const CALL = {
   REQUEST:        0x30,
@@ -43,19 +55,88 @@ export const READ_ACK_CMD     = 0x2A
 // Exported so the group-call mesh (group_call.js) reuses the exact same ICE
 // config as 1:1 calls.
 export const TURN_SERVERS = [
-  { urls: 'stun:telefon.lleo.me:3478' },
+  // Your own STUN/TURN. Calls between peers on different NATs need a TURN
+  // relay; STUN alone only works when at least one side is reachable.
+  // Put your coturn host here and the long-term credentials you configured
+  // in /etc/turnserver.conf (lt-cred-mech + a `user=` line).
+  { urls: 'stun:your_server.com:3478' },
   {
     urls: [
-      'turn:telefon.lleo.me:3478?transport=udp',
-      'turn:telefon.lleo.me:3478?transport=tcp',
+      'turn:your_server.com:3478?transport=udp',
+      'turn:your_server.com:3478?transport=tcp',
     ],
-    username:   '68ac1de52dedfab6',
-    credential: 'iHBRacAQfp1yUG6AILAxg6eOIGQejAiy',
+    username:   'YOUR_TURN_USER',
+    credential: 'YOUR_TURN_PASSWORD',
   },
 ]
 
 const enc = (s) => new TextEncoder().encode(s)
 const dec = (u) => new TextDecoder().decode(u)
+
+// Classify a getUserMedia rejection into a stable kind the UI can explain.
+// Browsers disagree on the message text but agree on `name`, so switch on that.
+function mediaErrorKind(e) {
+  switch (e && e.name) {
+    case 'NotAllowedError': case 'PermissionDeniedError': case 'SecurityError':
+      return 'denied'
+    case 'NotFoundError': case 'DevicesNotFoundError':
+      return 'missing'
+    case 'NotReadableError': case 'TrackStartError':
+      return 'busy'
+    case 'OverconstrainedError': case 'ConstraintNotSatisfiedError':
+      return 'unsupported'
+    default:
+      return 'unknown'
+  }
+}
+
+// True when the browser has the permission on 'denied' for good, i.e. it will
+// not even prompt again — that needs different advice (undo it in the site
+// settings) than a prompt the user merely dismissed. Unknown counts as false:
+// the Permissions API is missing in some browsers and throws on 'microphone'
+// in others, and a wrong hint is worse than no hint.
+async function permissionBlocked(name) {
+  try {
+    const p = await navigator.permissions?.query({ name })
+    return p?.state === 'denied'
+  } catch { return false }
+}
+
+/** Open local capture for a call, and make a refusal visible to the user.
+ *
+ *  getUserMedia reports one rejection for both devices at once, so which one
+ *  was refused cannot be told from the rejection alone. Retrying with audio
+ *  only separates the two cases that differ in kind: without a camera a call
+ *  still works (sound both ways, video one way), without a microphone there is
+ *  nothing to send — and that is exactly how a denied permission used to look
+ *  from the outside, a call that connected and then died in silence.
+ *
+ *  Reports through `ui.onMediaProblem({ device, kind, fatal, blocked })`.
+ *  Returns the stream; throws the audio failure if audio could not be opened. */
+export async function openUserMedia(video, ui) {
+  const report = async (e, device, fatal) => {
+    const kind = mediaErrorKind(e)
+    ui.onMediaProblem?.({
+      device, kind, fatal,
+      blocked: kind === 'denied' && await permissionBlocked(device),
+    })
+  }
+  try {
+    return await navigator.mediaDevices.getUserMedia({ video, audio: true })
+  } catch (e) {
+    ui.log?.(`x getUserMedia(audio+video): ${e.name || e}`)
+    let audioOnly
+    try {
+      audioOnly = await navigator.mediaDevices.getUserMedia({ video: false, audio: true })
+    } catch (e2) {
+      ui.log?.(`x getUserMedia(audio): ${e2.name || e2}`)
+      await report(e2, 'microphone', true)
+      throw e2
+    }
+    await report(e, 'camera', false)
+    return audioOnly
+  }
+}
 
 // How long the caller keeps a placed call "ringing" while waiting for the
 // callee to wake up / answer. After this it's torn down as "no answer".
@@ -93,11 +174,12 @@ function uuidFromBytes(u8) {
 export class CallManager {
   constructor(client, ui) {
     this.client = client       // WsClient instance
-    this.ui     = ui           // { onState, onIncomingCall, onText, log }
+    this.ui     = ui           // { onState, onIncomingCall, onText, onMediaProblem, log }
     this.pc     = null
     this.peerId = null         // Uint8Array(8) — currently active peer
     this.pendingCandidates = []
     this.localStream = null
+    this._mediaPending = null  // in-flight openUserMedia(), shared by callers
     this.preferredFacing = 'user'  // 'user' or 'environment'
     // Outgoing-call "ringing" state. While set, the caller is waiting for the
     // callee to accept; if the callee was offline (asleep) the initial
@@ -144,7 +226,11 @@ export class CallManager {
     // the permission prompt) so the caller sees their own self-view while
     // waiting for an answer — time to fix their hair. _openMedia is idempotent,
     // so the same stream is reused when the SDP offer is crafted on ACCEPT.
-    try { await this._openMedia() } catch (e) { this.ui.log('preview media: ' + e) }
+    // No microphone means this call can never carry anything, so end it here
+    // instead of ringing the callee and connecting them to silence. The UI has
+    // already been told why by openUserMedia.
+    try { await this._openMedia() }
+    catch (e) { this.ui.log('preview media: ' + e); this.hangup() }
   }
 
   /** Stop ringing: clear the held-call state and its timeout. Idempotent. */
@@ -204,7 +290,10 @@ export class CallManager {
     this.client._sendPeer(peerId, CALL.ACCEPT, new Uint8Array())
     // Initiator side: when they get ACCEPT, they will craft an offer; we
     // wait for SDP_OFFER. We do nothing here other than open the camera.
-    await this._openMedia()
+    // Failing that, hang up at once: the caller is already being told we
+    // accepted, and would otherwise sit through the whole ring timeout.
+    try { await this._openMedia() }
+    catch (e) { this.ui.log('accept media: ' + e); this.hangup() }
   }
 
   rejectIncoming(peerId) {
@@ -331,27 +420,68 @@ export class CallManager {
   /** Toggle between front and back camera. Replaces the video track in
    *  the existing RTCPeerConnection so the call is not interrupted. */
   async switchCamera() {
-    this.preferredFacing = this.preferredFacing === 'user' ? 'environment' : 'user'
-    if (!this.localStream) return
+    const want = this.preferredFacing === 'user' ? 'environment' : 'user'
+    if (!this.localStream) { this.preferredFacing = want; return }
     const old = this.localStream.getVideoTracks()[0]
-    let next = null
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: this.preferredFacing } },
-        audio: false,
-      })
-      next = s.getVideoTracks()[0]
-    } catch (e) {
-      this.ui.log(`x switchCamera: ${e}`); return
-    }
+
+    // Release the current camera BEFORE requesting the other one. A phone
+    // generally cannot hold both open at once, so while the old track was
+    // still live the request was served from the camera already open and came
+    // back facing the same way — the button looked dead, while the settings
+    // picker (which selects an exact deviceId) worked. Order matters here.
     old?.stop()
-    this.localStream.removeTrack(old)
+    if (old) this.localStream.removeTrack(old)
+
+    let next = await this._openFacing(want)
+    if (next) {
+      this.preferredFacing = want
+    } else {
+      // Could not get the other side: take the previous camera back rather
+      // than leaving the call with no video at all.
+      next = await this._openFacing(this.preferredFacing)
+      if (!next) { this.ui.log('x switchCamera: no camera available'); return }
+    }
+
     this.localStream.addTrack(next)
     if (this.pc) {
       const sender = this.pc.getSenders().find(s => s.track && s.track.kind === 'video')
       if (sender) await sender.replaceTrack(next)
     }
     this.ui.onLocalStream(this.localStream)
+  }
+
+  /** Open a camera facing `facing` ('user' | 'environment'), or null.
+   *
+   *  `{ ideal: ... }` is advisory — Android is free to ignore it and hand back
+   *  whichever camera is convenient, which it does. `{ exact: ... }` is a real
+   *  constraint, so try that first; and because some builds report videoinput
+   *  devices with no facingMode at all, fall back to matching the device label
+   *  and opening it by exact deviceId (the path the settings picker uses). */
+  async _openFacing(facing) {
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { exact: facing } },
+        audio: false,
+      })
+      return s.getVideoTracks()[0]
+    } catch { /* fall through to the deviceId path */ }
+    try {
+      const devs = await navigator.mediaDevices.enumerateDevices()
+      const cams = devs.filter((d) => d.kind === 'videoinput')
+      const wanted = facing === 'user'
+        ? /front|user|self/i
+        : /back|rear|environment|world/i
+      const pick = cams.find((d) => wanted.test(d.label || ''))
+      if (!pick) return null
+      const s = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: pick.deviceId } },
+        audio: false,
+      })
+      return s.getVideoTracks()[0]
+    } catch (e) {
+      this.ui.log(`x openFacing(${facing}): ${e}`)
+      return null
+    }
   }
 
   /** True while we're sending the screen instead of the camera. */
@@ -677,9 +807,11 @@ export class CallManager {
 
   async _initiate(peerId) {
     this.peerId = peerId
-    await this._openMedia()
+    try { await this._openMedia() }
+    catch (e) { this.ui.log('initiate media: ' + e); this.hangup(); return }
     this._makePeerConnection()
     for (const t of this.localStream.getTracks()) this.pc.addTrack(t, this.localStream)
+    this._wantRemoteVideo()
     const offer = await this.pc.createOffer()
     await this.pc.setLocalDescription(offer)
     this.client._sendPeer(peerId, CALL.SDP_OFFER, enc(offer.sdp))
@@ -688,7 +820,10 @@ export class CallManager {
 
   async _onOffer(peerId, sdp) {
     this.peerId = peerId
-    if (!this.localStream) await this._openMedia()
+    if (!this.localStream) {
+      try { await this._openMedia() }
+      catch (e) { this.ui.log('offer media: ' + e); this.hangup(); return }
+    }
     this._makePeerConnection()
     for (const t of this.localStream.getTracks()) this.pc.addTrack(t, this.localStream)
     await this.pc.setRemoteDescription({ type: 'offer', sdp })
@@ -736,16 +871,37 @@ export class CallManager {
 
   async _openMedia() {
     if (this.localStream) return
-    try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: this.preferredFacing } },
-        audio: true,
-      })
-      this.ui.onLocalStream(this.localStream)
-    } catch (e) {
-      this.ui.log(`x getUserMedia: ${e}`)
-      throw e
+    // The self-view of a placed call and the SDP path can both ask for media,
+    // and they overlap whenever the callee answers while the permission prompt
+    // is still on screen. Share the one request in flight: opening the camera
+    // twice means prompting twice, and reporting a refusal twice.
+    //
+    // Rejects when the microphone could not be opened at all — every caller
+    // ends the call on that, because an established call with no audio track
+    // is indistinguishable (to the user) from a broken network.
+    if (!this._mediaPending) {
+      this._mediaPending = openUserMedia({ facingMode: { ideal: this.preferredFacing } }, this.ui)
+        .finally(() => { this._mediaPending = null })
     }
+    const stream = await this._mediaPending
+    if (this.localStream === stream) return   // the other waiter got here first
+    this.localStream = stream
+    // Set the route on every call instead of inheriting whatever the
+    // previous one left behind — that inheritance is the bug.
+    nativeSpeaker(true)
+    this.ui.onLocalStream(this.localStream)
+  }
+
+  /** A machine with no camera (a desktop without one, or a refused permission)
+   *  still wants to SEE the other side. An offer built from an audio-only
+   *  stream has no video m-line at all, so the answerer has nowhere to put
+   *  their camera even when they have one — the call comes up sound-only for
+   *  both. Declaring a receive-only video transceiver asks for the one-way
+   *  stream explicitly. No-op when we do have a camera of our own. */
+  _wantRemoteVideo() {
+    if (!this.pc || this.localStream?.getVideoTracks().length) return
+    try { this.pc.addTransceiver('video', { direction: 'recvonly' }) }
+    catch (e) { this.ui.log('recvonly video: ' + e) }
   }
 
   _makePeerConnection() {
@@ -765,6 +921,7 @@ export class CallManager {
 
   _tearDown(reason) {
     this._clearRing()           // catch-all: never leave a ring timer dangling
+    nativeSpeaker(false)        // hand the audio route back to the system
     try {
       this.pc?.getSenders().forEach(s => s.track?.stop())
       this.pc?.close()

@@ -32,7 +32,7 @@ function isNativePlatform() {
 
 // In a Capacitor native build the page is local; network calls (preview)
 // must hit the real server. In the browser PWA, same-origin (empty base).
-const API_BASE = isNativePlatform() ? 'https://tele.karlson.ru' : ''
+const API_BASE = isNativePlatform() ? 'https://your_server.com' : ''
 
 /* =================================== toasts =================================== */
 
@@ -104,12 +104,12 @@ async function askNicknameIfMissing() {
 askNicknameIfMissing()
 document.getElementById('my-nickname').textContent = nickname || '?'
 
-// Default relay (public: tele.karlson.ru) — shown in settings; overridable
+// Default relay (public: your_server.com) — shown in settings; overridable
 // so anyone can point the app at their own self-hosted server.
 const SRV_DEFAULTS = {
-  url: 'wss://tele.karlson.ru/ws',
-  xpub: '4e8250d28b9b28836aadf6497535ef01056f19982d08ba4059b5c93537c80f06',
-  edpub: 'b835840fd3aba7cc4519513f3bbcb1c35170f6aa97d97c16eabdb2e36710d003',
+  url: 'wss://your_server.com/ws',
+  xpub: '0000000000000000000000000000000000000000000000000000000000000000',
+  edpub: '0000000000000000000000000000000000000000000000000000000000000000',
 }
 function serverConfig() {
   return {
@@ -1472,21 +1472,21 @@ if (!NATIVE_APP && /Android/.test(navigator.userAgent)) {
   $('btn-apk').hidden = false
 }
 $('btn-apk').onclick = () => {
-  window.open('https://tele.karlson.ru/apk/telefon-latest.apk', '_blank')
+  window.open('https://your_server.com/apk/telefon-latest.apk', '_blank')
 }
 
 async function checkAndUpdate() {
   const cur = ($('build-tag')?.textContent || '').replace(/^build\s*/, '').trim()
   let latest = ''
   try {
-    const r = await fetch('https://tele.karlson.ru/apk/version.txt?t=' + Date.now())
+    const r = await fetch('https://your_server.com/apk/version.txt?t=' + Date.now())
     latest = (await r.text()).trim()
   } catch { toast('Не удалось проверить обновление', 'error'); return }
   if (!latest) { toast('Версия на сервере не найдена', 'error'); return }
   if (latest === cur) { toast(`Актуальная версия (${cur})`, 'success'); return }
   if (confirm(`Новая версия ${latest} (у вас ${cur}). Скачать и установить?`)) {
     // _system → Capacitor opens it in the external browser / DownloadManager.
-    window.open('https://tele.karlson.ru/apk/telefon-latest.apk?t=' + Date.now(), '_system')
+    window.open('https://your_server.com/apk/telefon-latest.apk?t=' + Date.now(), '_system')
   }
 }
 
@@ -1978,11 +1978,11 @@ async function sendFile(file) {
   const meta = { id: fileId, name: file.name, mime: file.type || 'application/octet-stream', size: file.size, thumb_b64 }
   await Storage.saveFileMeta({ ...meta, thumb_blob: thumb_b64 ? blobFromB64(thumb_b64, 'image/jpeg') : null })
   await Storage.saveFileBlob(fileId, file)  // we already have the blob locally
-  await DB.add('telefon.lleo.me', 'messages', {
+  await DB.add('telefon', 'messages', {
     id: msgId, peer_id: currentPeerId, dir: 'out',
     body: `%${fileId}`, ts: Date.now(), status: 'pending',
   })
-  await DB.add('telefon.lleo.me', 'outbox', { id: msgId, attempts: 0, last_try_ts: 0 })
+  await DB.add('telefon', 'outbox', { id: msgId, attempts: 0, last_try_ts: 0 })
 
   // Render the bubble locally first.
   const row = await renderFileMessage({ id: msgId, dir: 'out', body: `%${fileId}`, status: 'pending' })

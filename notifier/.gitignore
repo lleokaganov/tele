@@ -1,2 +1,3 @@
 .vapid.env
 .fcm-service-account.json
+.notifier.env
