@@ -77,7 +77,7 @@ function isNativePlatform() {
     && window.Capacitor.isNativePlatform())
 }
 
-// In a Capacitor native build the page is local; network calls (preview)
+// In a Capacitor native build the page is local; network calls
 // must hit the real server. In the browser PWA, same-origin (empty base).
 const API_BASE = isNativePlatform() ? 'https://your_server.com' : ''
 
@@ -1072,8 +1072,6 @@ function renderTextMessage(m) {
   text.className = 'msg-text'
   linkifyInto(text, m.body)
   row.insertBefore(text, row.firstChild)
-  // Fire-and-forget: harvest a link preview for the first URL, if any.
-  maybeAttachPreview(row, m)
   return row
 }
 
@@ -1098,70 +1096,6 @@ function linkifyInto(span, body) {
   if (last < body.length) span.appendChild(document.createTextNode(body.slice(last)))
 }
 
-const previewFetched = new Set()  // msg ids we've already tried, avoids refetch on re-render
-
-async function maybeAttachPreview(row, m) {
-  if (previewFetched.has(m.id)) return
-  const match = m.body.match(URL_RE)
-  if (!match) return
-  previewFetched.add(m.id)
-  const url = trimTrailingPunct(match[0])
-  let p
-  try {
-    const resp = await fetch(API_BASE + '/preview?u=' + encodeURIComponent(url))
-    if (!resp.ok) return
-    p = await resp.json()
-  } catch { return }
-  if (!p || (!p.title && !p.description && !p.image)) return
-  // The row may have been re-rendered (history reload) while we awaited;
-  // only attach if this exact node is still in the document.
-  if (!row.isConnected) return
-  // Don't double-attach if a card for this id already exists.
-  if (document.querySelector(`.preview-card[data-preview-for="${cssEscape(m.id)}"]`)) return
-  const card = buildPreviewCard(p)
-  card.classList.add(m.dir === 'out' ? 'me' : 'them')
-  card.dataset.previewFor = m.id
-  row.after(card)
-  const chat = $('chat')
-  if (chat) chat.scrollTop = chat.scrollHeight
-}
-
-function cssEscape(s) {
-  return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&')
-}
-
-function buildPreviewCard(p) {
-  const a = document.createElement('a')
-  a.className = 'preview-card'
-  a.href = p.url
-  a.target = '_blank'
-  a.rel = 'noopener noreferrer'
-  if (p.image) {
-    const img = document.createElement('img')
-    img.className = 'preview-img'
-    img.src = p.image
-    img.loading = 'lazy'
-    img.alt = ''
-    img.onerror = () => img.remove()
-    a.appendChild(img)
-  }
-  const body = document.createElement('div')
-  body.className = 'preview-body'
-  if (p.site_name) {
-    const s = document.createElement('div'); s.className = 'preview-site'
-    s.textContent = p.site_name; body.appendChild(s)
-  }
-  if (p.title) {
-    const t = document.createElement('div'); t.className = 'preview-title'
-    t.textContent = p.title; body.appendChild(t)
-  }
-  if (p.description) {
-    const d = document.createElement('div'); d.className = 'preview-desc'
-    d.textContent = p.description; body.appendChild(d)
-  }
-  a.appendChild(body)
-  return a
-}
 
 async function renderFileMessage(m, fileObj = null) {
   const row = makeMsgShell(m)
@@ -1407,17 +1341,13 @@ function updateRowStatus(msgId, status) {
   if (tick) { tick.textContent = statusGlyph(status); tick.classList.toggle('read', status === 'read') }
 }
 
-// Remove a message's chat row and any link-preview card attached to it.
+// Remove a message's chat row.
 function removeMessageRow(msgId) {
   const row = renderedMessages.get(msgId)
   if (row) {
-    const card = row.nextElementSibling
-    if (card && card.classList.contains('preview-card') &&
-        card.dataset.previewFor === msgId) card.remove()
     row.remove()
     renderedMessages.delete(msgId)
   }
-  previewFetched.delete(msgId)
 }
 
 // Replace a text message's body in place (used on incoming + local edit).
@@ -1436,11 +1366,6 @@ function updateMessageBody(msgId, newBody) {
   } else {
     span.appendChild(row.querySelector('.msg-edited'))
   }
-  // Refresh the link preview for the new text.
-  const old = row.nextElementSibling
-  if (old && old.classList.contains('preview-card') && old.dataset.previewFor === msgId) old.remove()
-  previewFetched.delete(msgId)
-  maybeAttachPreview(row, { id: msgId, body: newBody, dir: row.classList.contains('me') ? 'out' : 'in' })
 }
 
 /* ============================== media permissions ============================== */

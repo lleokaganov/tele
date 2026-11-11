@@ -583,29 +583,6 @@ html[data-theme="dark"] .msg.me    { background: rgba(255,98,0,.14); }
 .msg-link { color: #fff; text-decoration: underline; word-break: break-all; }
 .msg.them .msg-link { color: var(--accent); }
 
-/* ============================== link previews ============================== */
-
-.preview-card {
-  display: block; text-decoration: none; color: inherit;
-  max-width: 75%; margin: -.05rem 0 .2rem;
-  background: var(--bg-soft); border: 1px solid var(--line);
-  border-left: 3px solid var(--accent);
-  border-radius: var(--r-md); overflow: hidden;
-}
-.preview-card.me   { align-self: flex-end }
-.preview-card.them { align-self: flex-start }
-.preview-card:hover { border-color: var(--ink-soft) }
-.preview-img {
-  display: block; width: 100%; max-height: 180px;
-  object-fit: cover; background: var(--line);
-}
-.preview-body { padding: .45rem .6rem; display: flex; flex-direction: column; gap: .15rem }
-.preview-site  { font-size: .7rem; color: var(--ink-soft); text-transform: uppercase; letter-spacing: .03em }
-.preview-title { font-size: .9rem; font-weight: 600; line-height: 1.25; color: var(--ink);
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden }
-.preview-desc  { font-size: .8rem; color: var(--ink-soft); line-height: 1.3;
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden }
-
 /* ============================== dialogs ============================== */
 
 .dialog {

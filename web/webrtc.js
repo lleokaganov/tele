@@ -180,6 +180,13 @@ export class CallManager {
     this.pendingCandidates = []
     this.localStream = null
     this._mediaPending = null  // in-flight openUserMedia(), shared by callers
+    // Hex id of the peer whose incoming call THIS user accepted. An SDP offer
+    // is only legitimate from that peer: the caller never receives an offer
+    // (it gets SDP_ANSWER), and there is no renegotiation anywhere in this
+    // class (camera switch and screen share use replaceTrack). Without this
+    // gate any address-book peer could send an unsolicited SDP_OFFER and
+    // _onOffer would open the camera and answer it silently.
+    this.acceptedPeer = null
     this.preferredFacing = 'user'  // 'user' or 'environment'
     // Outgoing-call "ringing" state. While set, the caller is waiting for the
     // callee to accept; if the callee was offline (asleep) the initial
@@ -287,6 +294,7 @@ export class CallManager {
 
   async acceptIncoming(peerId) {
     this.peerId = peerId
+    this.acceptedPeer = hexOf(peerId)   // arms the SDP_OFFER gate for this peer
     this.client._sendPeer(peerId, CALL.ACCEPT, new Uint8Array())
     // Initiator side: when they get ACCEPT, they will craft an offer; we
     // wait for SDP_OFFER. We do nothing here other than open the camera.
@@ -297,6 +305,7 @@ export class CallManager {
   }
 
   rejectIncoming(peerId) {
+    if (this.acceptedPeer === hexOf(peerId)) this.acceptedPeer = null
     this.client._sendPeer(peerId, CALL.REJECT, new Uint8Array())
   }
 
@@ -819,6 +828,11 @@ export class CallManager {
   }
 
   async _onOffer(peerId, sdp) {
+    // Consent gate: drop offers we did not ask for. See `acceptedPeer`.
+    if (!this.acceptedPeer || this.acceptedPeer !== hexOf(peerId)) {
+      this.ui.log('dropped unsolicited SDP offer from ' + hexOf(peerId))
+      return
+    }
     this.peerId = peerId
     if (!this.localStream) {
       try { await this._openMedia() }
@@ -921,6 +935,7 @@ export class CallManager {
 
   _tearDown(reason) {
     this._clearRing()           // catch-all: never leave a ring timer dangling
+    this.acceptedPeer = null    // disarm the SDP_OFFER gate with the call
     nativeSpeaker(false)        // hand the audio route back to the system
     try {
       this.pc?.getSenders().forEach(s => s.track?.stop())

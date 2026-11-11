@@ -13,7 +13,6 @@
 mod crypto25519;
 mod handlers_ws;
 mod hub;
-mod preview;
 mod server_keys;
 
 use std::net::SocketAddr;
@@ -66,7 +65,6 @@ async fn main() -> anyhow::Result<()> {
         App::new()
             .app_data(web::Data::new(hub.clone()))
             .route("/ws", web::get().to(handlers_ws::handler))
-            .route("/preview", web::get().to(preview::handler))
             .route(
                 "/status",
                 web::get().to({
