@@ -24,6 +24,9 @@ futures-util = "0.3"
 
 anyhow = "1"
 
+# setsockopt only: TCP_USER_TIMEOUT / SO_KEEPALIVE on the relay socket.
+libc = "0.2"
+
 # Ordered map for the outbox: preserves insertion order on iteration so
 # pending messages are flushed in the order they were sent. (HashMap's
 # iteration order is unspecified — caused out-of-order delivery on reconnect.)

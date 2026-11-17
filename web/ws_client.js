@@ -43,6 +43,12 @@ export const CMD = {
   MSG_DELETE:      0x28,
   MSG_EDIT:        0x29,
   READ_ACK:        0x2A,
+  // Display name, sent peer-to-peer instead of inside INTRODUCE. INTRODUCE is
+  // a SERVER-bound frame, so a nickname carried there is readable by the relay;
+  // this one rides an ordinary peer frame and is end-to-end encrypted. Clients
+  // older than 11.11.2026 do not know this code and drop it silently, which is
+  // why new clients still send INTRODUCE (with an EMPTY nickname) alongside.
+  NICK:            0x2B,
   INFO:            0x88,   // server-originated plain-text notice → shown to user
   ERROR:           0xFF,
 }
@@ -362,6 +368,12 @@ export class WsClient {
     const frame = this.session.buildIntroduce(targetId, nickname || '', this._nextMsgId())
     this.ws.send(frame)
     return true
+  }
+
+  /** Tell a peer our display name, end-to-end encrypted. Body is the same
+   *  "name␟type" string INTRODUCE used to carry in the clear. */
+  sendNick(peerId, nick) {
+    return this._sendPeer(peerId, CMD.NICK, new TextEncoder().encode(String(nick || '')))
   }
 
   /** Register a push token with the server so it can wake us when offline.

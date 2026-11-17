@@ -21,7 +21,7 @@
 //     offerer. Deterministic on both sides ⇒ no glare, no duplicate peer
 //     connections.
 
-import { TURN_SERVERS, openUserMedia } from './webrtc.js'
+import { TURN_SERVERS, openUserMedia, nativeMediaGate } from './webrtc.js'
 
 export const GROUP = {
   INVITE: 0x38,  // host → invitee : { room, roster:[{id,qr,label}], host }
@@ -105,6 +105,7 @@ export class GroupCallManager {
     roster = roster.slice(0, MAX_MEMBERS)
     this.room = randomRoom()
     this._ingestRoster(roster)
+    nativeMediaGate(true)        // user started the room — arm the native gate
     // No microphone → don't open the room at all; nobody gets invited into a
     // call we cannot speak in. _teardown puts `active` back to false.
     try { await this._openMedia() }
@@ -130,6 +131,7 @@ export class GroupCallManager {
     if (this.active) { this.ui.log('group: busy'); return }
     this.room = inv.room
     this._ingestRoster(inv.roster)
+    nativeMediaGate(true)        // user accepted the invite — arm the native gate
     try { await this._openMedia() }
     catch (e) { this.ui.log('group media: ' + e); this._teardown('group:ended'); return }
     this.ui.onState('group:active')
@@ -420,6 +422,7 @@ export class GroupCallManager {
   }
 
   _teardown(state) {
+    nativeMediaGate(false)       // close the native camera/mic gate with the room
     for (const m of this.members.values()) {
       this._closePeer(m)
       if (m.idHex !== this.myIdHex && m.active) this.ui.onParticipantLeave(m.idHex)

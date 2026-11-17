@@ -600,6 +600,14 @@ function splitNickType(raw) {
   return { name: s.slice(0, i), type: (type && type !== 'person') ? type : null }
 }
 
+// Peers that introduced themselves and are waiting for the user's decision,
+// plus the ones already declined in this session (so a repeating introducer
+// cannot keep re-opening the dialog). Pending peers are deliberately NOT added
+// to the crypto session: without their key in the session their frames cannot
+// be decrypted at all, so "pending" is a real block, not a UI flag.
+const pendingIntros  = {}   // idHex -> { x_pub, ed_pub, qr, nick, introType }
+const declinedIntros = new Set()
+
 function handleIntroFrom(body) {
   if (body.length < 64) return
   const x_pub  = body.slice(0, 32)
@@ -612,32 +620,90 @@ function handleIntroFrom(body) {
   const b64 = btoa(String.fromCharCode(...combined))
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
   const qr = 'K0' + b64
-  let idU8
-  try { idU8 = client.addPeer(x_pub, ed_pub) } catch (e) { console.warn('intro', e); return }
-  const idHex = u8hex(idU8)
-  // A blacklisted peer introducing itself again must NOT be re-added to the
-  // contact list — drop the intro before it touches peerBook.
-  if (isBanned(idHex)) return
-  const wasNew = !peerBook[idHex]
-  // Preserve any local nickname if the user already named this peer; only
-  // adopt the introduced nickname for fresh entries.
-  const entry = {
-    qr,
-    label: peerBook[idHex]?.label || nick || null,
-    online: true,  // they're online, that's how they just introduced themselves
+  // ClientId is the first 8 bytes of the X25519 public key — derivable without
+  // touching the crypto session, which we must not do until the user agrees.
+  const idHex = u8hex(x_pub.slice(0, 8))
+  if (isBanned(idHex)) return          // blacklisted: never re-added, no prompt
+  if (declinedIntros.has(idHex)) return
+  if (pendingIntros[idHex]) return     // dialog already on screen
+
+  if (!peerBook[idHex]) {
+    // Unknown peer: ask first. Nothing is stored and nothing is decryptable
+    // until the user says yes.
+    pendingIntros[idHex] = { x_pub, ed_pub, qr, nick, introType }
+    const shown = nick || idHex.slice(0, 8)
+    window.lui.confirm({
+      icon: '👤',
+      title: t('intro_req_title'),
+      text: t('intro_req_text', { name: shown }),
+      ok: t('intro_add'),
+      cancel: t('decline'),
+    }, () => acceptIntro(idHex), () => {
+      delete pendingIntros[idHex]
+      declinedIntros.add(idHex)
+    })
+    playNotify()
+    return
   }
-  // Keep an existing type, else adopt the introduced one. Absent = person.
-  const ty = peerBook[idHex]?.type || introType
+
+  // Known peer re-introducing itself (new keys after reinstall, or just a
+  // periodic re-introduce): refresh keys and type, keep the user's own label.
+  try { client.addPeer(x_pub, ed_pub) } catch (e) { console.warn('intro', e); return }
+  const entry = { qr, label: peerBook[idHex].label || nick || null, online: true }
+  const ty = peerBook[idHex].type || introType
   if (ty) entry.type = ty
   peerBook[idHex] = entry
   persist()
   renderContacts()
   subscribeAll()
-  if (wasNew) {
-    playNotify()
-    flashContact(idHex)
-    toast(t('added_you', { name: nick || idHex.slice(0, 8) }), 'success')
-  }
+}
+
+/** The user agreed to a pending introduction: only now does the peer enter the
+ *  crypto session and the address book. */
+function acceptIntro(idHex) {
+  const p = pendingIntros[idHex]
+  if (!p) return
+  delete pendingIntros[idHex]
+  try { client.addPeer(p.x_pub, p.ed_pub) } catch (e) { console.warn('intro accept', e); return }
+  const entry = { qr: p.qr, label: p.nick || null, online: true }
+  if (p.introType) entry.type = p.introType
+  peerBook[idHex] = entry
+  persist()
+  renderContacts()
+  subscribeAll()
+  flashContact(idHex)
+  toast(t('added_you', { name: p.nick || idHex.slice(0, 8) }), 'success')
+}
+
+/** A peer told us its display name over an ordinary (end-to-end encrypted)
+ *  peer frame. Same payload INTRODUCE used to carry in the clear, so the relay
+ *  no longer sees it. Only updates the name — the peer must already be known,
+ *  which it is: a NICK frame can only be decrypted if we hold their keys. */
+function handleNickFrom(peerIdU8, raw) {
+  const idHex = u8hex(peerIdU8)
+  if (isBanned(idHex)) return
+  const prev = peerBook[idHex]
+  if (!prev) return                      // unknown peer — nothing to name
+  const { name: nick, type: introType } = splitNickType(new TextDecoder().decode(raw))
+  // A user-chosen local label always wins; we only fill in what is empty.
+  const label = prev.label || nick || null
+  const ty = prev.type || introType
+  const entry = { ...prev, label }
+  if (ty) entry.type = ty
+  if (entry.label === prev.label && entry.type === prev.type) return  // nothing new
+  peerBook[idHex] = entry
+  persist()
+  renderContacts()
+}
+
+/** Introduce ourselves to a peer. The nickname deliberately does NOT go into
+ *  INTRODUCE (a server-bound frame the relay can read) — it follows as a
+ *  separate, end-to-end encrypted NICK frame. Clients older than 11.11.2026
+ *  ignore NICK, so they will show this contact unnamed until they update;
+ *  nothing else about them breaks. */
+function introduceSelf(peerIdU8) {
+  client.introduce(peerIdU8, '')
+  try { client.sendNick(peerIdU8, nickname || '') } catch (e) { console.warn('nick', e) }
 }
 
 function flashContact(idHex) {
@@ -1749,6 +1815,8 @@ client.onPeer = (msg) => {
     groupCall._onPeerMessage(msg)
   } else if (isMailboxFrame(msg)) {
     onMailboxMessage(msg)
+  } else if (msg.cmd === CMD.NICK) {
+    handleNickFrom(msg.from_id, msg.body)
   } else {
     callOnPeer(msg)
   }
@@ -1818,7 +1886,9 @@ function ensureMailboxPeer() {
     }
   } catch (e) { console.warn('mailbox addPeer', e); return null }
   if (!mailboxIntroduced) {
-    try { client.introduce(id, nickname || '') ; mailboxIntroduced = true } catch {}
+    // The mailbox stores opaque blobs keyed by recipient key — it has no use
+    // for our display name, and it must not learn it. Empty nickname on purpose.
+    try { client.introduce(id, '') ; mailboxIntroduced = true } catch {}
   }
   return { id, idHex, xpub }
 }
@@ -2496,7 +2566,7 @@ $('add-save').onclick = () => {
     // The other side does not yet have our keys — push them via the
     // server. If the peer is offline right now, the server drops the
     // INTRODUCE silently; user can repeat via a "say hi" button later.
-    client.introduce(idU8, nickname || '')
+    introduceSelf(idU8)
     $('dialog-add').hidden = true
     toast(t('contact_added', { name: label || idHex.slice(0, 8) }), 'success')
   } catch (e) {
@@ -2948,7 +3018,7 @@ function openDeleteDialog(msgId, isOut) {
   const doDelete = async (forEveryone) => {
     if (forEveryone && currentPeerId) {
       const peerId = hexU8(currentPeerId)
-      client.introduce(peerId, nickname || '')
+      introduceSelf(peerId)
       client.sendMsgDelete(peerId, msgId)
     }
     await Storage.deleteMessage(msgId)
@@ -3154,7 +3224,7 @@ function startOutgoingCall(idHex) {
   // Re-introduce ourselves first so the callee can decrypt our CALL_REQUEST
   // even if they don't yet have our keys (e.g. they were offline when the
   // initial INTRODUCE was sent right after we added their QR).
-  client.introduce(peerId, nickname || '')
+  introduceSelf(peerId)
   call.call(peerId)
   currentCallId = idHex
   logCall('outgoing', idHex)
@@ -3294,7 +3364,7 @@ $('send-text').onclick = async () => {
     if (ok) {
       updateMessageBody(id, text)
       // Best-effort push to the peer; harmless if they're offline.
-      client.introduce(peerId, nickname || '')
+      introduceSelf(peerId)
       client.sendMsgEdit(peerId, id, text)
     }
     cancelEdit()
@@ -3375,7 +3445,7 @@ function deliveryWatchdog(msgId) {
     }
     if (!entry.retried) {
       // Online but no ack → recipient likely lacks our keys. Introduce + resend.
-      client.introduce(entry.peerId, entry.nick || '')
+      introduceSelf(entry.peerId)
       client.sendText(entry.peerId, msgId, entry.text)
       entry.retried = true
       entry.timer = setTimeout(() => deliveryWatchdog(msgId), DELIVERY_WATCHDOG_MS)
@@ -3503,7 +3573,7 @@ async function sendFile(file) {
   $('chat').scrollTop = $('chat').scrollHeight
 
   // Push offer + chunks + end.
-  client.introduce(peerId, nickname || '')
+  introduceSelf(peerId)
   client.sendFileOffer(peerId, meta)
   const total = Math.ceil(buf.length / CHUNK_BYTES) || 1
   for (let i = 0; i < total; i++) {
@@ -3591,7 +3661,7 @@ async function flushOutboxFor(peerIdHex) {
   if (pending.length === 0) return
   const peerId = hexU8(peerIdHex)
   // Re-introduce in case the peer just woke up without us.
-  client.introduce(peerId, nickname || '')
+  introduceSelf(peerId)
   for (const m of pending) {
     const ok = isFileRef(m.body)
       ? await replayFileSend(peerId, m)

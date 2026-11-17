@@ -40,6 +40,7 @@
 use indexmap::IndexMap;
 use std::collections::{HashSet, VecDeque};
 use std::env;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::Engine;
@@ -677,7 +678,7 @@ async fn mailbox_send_op(
     let frame = build_peer_frame(me, &mailbox.x_pub, &mailbox.id, k_c2s,
         &pack_inner(*seq, op, body));
     *seq = seq.wrapping_add(1);
-    ws.send(Message::Binary(frame)).await.is_ok()
+    ws_send(ws, Message::Binary(frame)).await
 }
 
 /// Ensure the mailbox has been INTRODUCE'd in this session. The mailbox needs
@@ -702,7 +703,7 @@ async fn mailbox_ensure_intro(
     let frame = build_server_bound(me, server_x_pub, k_c2s,
         &pack_inner(*seq, CMD_INTRODUCE, &body));
     *seq = seq.wrapping_add(1);
-    let _ = ws.send(Message::Binary(frame)).await;
+    let _ = ws_send(ws, Message::Binary(frame)).await;
     state.introduced = true;
 }
 
@@ -819,7 +820,7 @@ async fn send_read_ack(
     let ack = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
         &pack_inner(*seq, CMD_READ_ACK, msgid));
     *seq = seq.wrapping_add(1);
-    let _ = ws.send(Message::Binary(ack)).await;
+    let _ = ws_send(ws, Message::Binary(ack)).await;
 }
 
 fn decode_qr(qr: &str) -> anyhow::Result<Peer> {
@@ -993,7 +994,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         };
-        if ws.send(Message::Binary(build_handshake_request(&me, &server_x_pub))).await.is_err() {
+        if !ws_send(&mut ws, Message::Binary(build_handshake_request(&me, &server_x_pub))).await {
             eprintln!("[wschat] handshake send failed; retry in 5s");
             tokio::time::sleep(Duration::from_secs(5)).await;
             continue 'reconnect;
@@ -1007,19 +1008,20 @@ async fn main() -> anyhow::Result<()> {
             tokio::time::sleep(Duration::from_secs(5)).await;
             continue 'reconnect;
         }
+        arm_dead_link_detection(&ws);
         eprintln!("[wschat] connected. introducing self to peer…");
 
         // Introduce ourselves so the peer gets our keys + nick as a contact.
         let mut intro_body = Vec::with_capacity(8 + nick.len());
         intro_body.extend_from_slice(&peer.id);
         intro_body.extend_from_slice(nick.as_bytes());
-        let _ = ws.send(Message::Binary(
+        let _ = ws_send(&mut ws, Message::Binary(
             build_server_bound(&me, &server_x_pub, &k_c2s, &pack_inner(seq, CMD_INTRODUCE, &intro_body))
         )).await;
         seq = seq.wrapping_add(1);
 
         // Subscribe to the peer's presence so PEER_ONLINE wakes the outbox.
-        let _ = ws.send(Message::Binary(
+        let _ = ws_send(&mut ws, Message::Binary(
             build_server_bound(&me, &server_x_pub, &k_c2s, &pack_inner(seq, CMD_SUBSCRIBE, &peer.x_pub))
         )).await;
         seq = seq.wrapping_add(1);
@@ -1039,10 +1041,11 @@ async fn main() -> anyhow::Result<()> {
         // Drives the incoming print sink: a batch prints once the peer goes quiet.
         let mut sink_poll = tokio::time::interval(Duration::from_millis(200));
         // Liveness: the server emits a frame (binary, WS-ping, or plain-text "ping")
-        // at least every ~20s. If we see NOTHING for >50s the socket has silently
-        // gone dead (NAT drop / sleep) without a close event — force a reconnect.
+        // every RELAY_PING. Seeing NOTHING for RX_DEADLINE means the socket has
+        // silently gone dead (NAT drop / sleep) without a close event.
         let mut liveness = tokio::time::interval(Duration::from_secs(10));
         let mut last_rx = std::time::Instant::now();
+        LINK_STALLED.store(false, Ordering::Relaxed);
         // Peer-online tracked from the server's PEER_ONLINE/PEER_OFFLINE frames.
         // Default-false (unknown until presence arrives) — send_text uses this to
         // decide whether to fire a WAKE push for an offline recipient.
@@ -1060,14 +1063,14 @@ async fn main() -> anyhow::Result<()> {
                         Some(Ok(Message::Text(t))) => {
                             // Server's plain-text keepalive; reply "pong". Any received
                             // frame already refreshed last_rx above.
-                            if t == "ping" { let _ = ws.send(Message::Text("pong".to_string())).await; }
+                            if t == "ping" { let _ = ws_send(&mut ws, Message::Text("pong".to_string())).await; }
                         }
-                        Some(Ok(Message::Ping(p))) => { let _ = ws.send(Message::Pong(p)).await; }
+                        Some(Ok(Message::Ping(p))) => { let _ = ws_send(&mut ws, Message::Pong(p)).await; }
                         Some(Ok(Message::Close(_))) | None => {
-                            eprintln!("[wschat] connection closed; reconnecting in 3s");
+                            eprintln!("[wschat] connection closed; reconnecting in 1s");
                             break;
                         }
-                        Some(Err(e)) => { eprintln!("[wschat] ws error: {e}; reconnecting in 3s"); break; }
+                        Some(Err(e)) => { eprintln!("[wschat] ws error: {e}; reconnecting in 1s"); break; }
                         _ => {}
                     }
                 }
@@ -1119,10 +1122,18 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
-                _ = sink_poll.tick() => { sink_tick(); }
+                _ = sink_poll.tick() => {
+                    sink_tick();
+                    // A write gave up while we were inside it (see ws_send).
+                    if LINK_STALLED.load(Ordering::Relaxed) {
+                        eprintln!("[wschat] write stalled — reconnecting in 1s");
+                        break;
+                    }
+                }
                 _ = liveness.tick() => {
-                    if last_rx.elapsed() > Duration::from_secs(50) {
-                        eprintln!("[wschat] no frames for >50s — link dead, reconnecting");
+                    if last_rx.elapsed() > RX_DEADLINE {
+                        eprintln!("[wschat] no frames for {}s — link dead, reconnecting",
+                                  RX_DEADLINE.as_secs());
                         break;
                     }
                 }
@@ -1132,12 +1143,93 @@ async fn main() -> anyhow::Result<()> {
         // Link is going down: nothing more will join the pending batch soon.
         sink_flush();
         let _ = ws.close(None).await;
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
     Ok(())
 }
 
 type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// How long the relay may stay silent at TCP level before the kernel declares
+/// the socket dead: TCP_USER_TIMEOUT, plus keepalive for an idle link.
+///
+/// This is the primary dead-link detector, and it measures silence rather than
+/// bandwidth. A deadline on our own writes cannot do that: a write blocks for
+/// as long as the socket buffer takes to drain, so on a weak uplink a big file
+/// legitimately stalls for seconds, and any threshold tight enough to be quick
+/// would abort real transfers. TCP_USER_TIMEOUT instead fails the socket when
+/// data has gone unacknowledged for this long -- on a slow-but-alive link the
+/// acks keep arriving and nothing fires; on a black hole nothing arrives and
+/// the socket errors out in ten seconds flat.
+///
+/// Why this exists: on 2026-11-15 a console went silent for fifteen minutes.
+/// The bridge was pushing a 2.3 MB image into a connection the relay no longer
+/// had -- the home NAT had dropped the mapping and no FIN ever arrived -- so
+/// `send().await` never returned. The kernel's own default gives up only after
+/// tcp_retries2, about fifteen minutes; ten seconds is what the link deserves.
+const LINK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Backstop for the case the kernel cannot see: nothing received for two and a
+/// half of the relay's pings (it pings every 20s and drops a client silent for
+/// 60s -- PING_INTERVAL / HEARTBEAT_TIMEOUT in the server). A black-holed
+/// socket is already gone by LINK_TIMEOUT; this catches a link that carries
+/// acks but no data -- a stuck relay, say.
+const RX_DEADLINE: Duration = Duration::from_secs(50);
+
+/// Backstop on our own writes, for a stall above the kernel: a TLS layer that
+/// accepts no more plaintext, say. Deliberately twice LINK_TIMEOUT so the
+/// kernel stays the one that normally decides, and so a slow uplink draining a
+/// full send buffer is never mistaken for a dead link.
+const SEND_DEADLINE: Duration = Duration::from_secs(20);
+
+/// Tell the kernel to stop being patient with this socket.
+///
+/// TCP_USER_TIMEOUT bounds how long data may stay unacknowledged; SO_KEEPALIVE
+/// covers the other case, an idle connection with nothing in flight, where
+/// there is no unacked data to time out.
+fn arm_dead_link_detection(ws: &Ws) {
+    use std::os::fd::AsRawFd;
+    use tokio_tungstenite::MaybeTlsStream;
+
+    let fd = match ws.get_ref() {
+        MaybeTlsStream::Plain(t) => t.as_raw_fd(),
+        MaybeTlsStream::Rustls(t) => t.get_ref().0.as_raw_fd(),
+        _ => return,
+    };
+    let secs = LINK_TIMEOUT.as_secs() as libc::c_int;
+    let set = |level, name, value: libc::c_int| unsafe {
+        libc::setsockopt(fd, level, name,
+                         &value as *const _ as *const libc::c_void,
+                         std::mem::size_of::<libc::c_int>() as libc::socklen_t)
+    };
+    // milliseconds
+    set(libc::IPPROTO_TCP, libc::TCP_USER_TIMEOUT, secs * 1000);
+    set(libc::SOL_SOCKET, libc::SO_KEEPALIVE, 1);
+    set(libc::IPPROTO_TCP, libc::TCP_KEEPIDLE, secs);
+    set(libc::IPPROTO_TCP, libc::TCP_KEEPINTVL, secs / 2);
+    set(libc::IPPROTO_TCP, libc::TCP_KEEPCNT, 2);
+}
+
+/// Set by `ws_send` when a write dies; the main loop sees it and reconnects.
+static LINK_STALLED: AtomicBool = AtomicBool::new(false);
+
+async fn ws_send(ws: &mut Ws, msg: Message) -> bool {
+    match tokio::time::timeout(SEND_DEADLINE, ws.send(msg)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            eprintln!("[wschat] send failed: {e}");
+            LINK_STALLED.store(true, Ordering::Relaxed);
+            false
+        }
+        Err(_) => {
+            eprintln!("[wschat] send stalled for {}s — link dead",
+                      SEND_DEADLINE.as_secs());
+            LINK_STALLED.store(true, Ordering::Relaxed);
+            false
+        }
+    }
+}
+
 
 /// Connect, handshake, send one WAKE for `target_hex` (8-byte client id),
 /// then exit. The relay forwards it to the notifier, which pushes the peer.
@@ -1161,7 +1253,9 @@ async fn wake_mode(target_hex: &str, is_call: bool) -> anyhow::Result<()> {
     let ws_url = env_or("WS_URL", DEFAULT_WS_URL);
 
     let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await?;
-    ws.send(Message::Binary(build_handshake_request(&me, &server_x_pub))).await?;
+    if !ws_send(&mut ws, Message::Binary(build_handshake_request(&me, &server_x_pub))).await {
+        anyhow::bail!("handshake send failed");
+    }
     let shared = x25519(me.x_priv, server_x_pub);
     let (k_c2s, k_s2c) = derive_session(&shared);
     let ok = matches!(ws.next().await,
@@ -1175,7 +1269,9 @@ async fn wake_mode(target_hex: &str, is_call: bool) -> anyhow::Result<()> {
     let mut wbody = target.to_vec();
     wbody.push(if is_call { 1 } else { 0 });
     let frame = build_server_bound(&me, &server_x_pub, &k_c2s, &pack_inner(1, CMD_WAKE, &wbody));
-    ws.send(Message::Binary(frame)).await?;
+    if !ws_send(&mut ws, Message::Binary(frame)).await {
+        anyhow::bail!("WAKE send failed");
+    }
     eprintln!("[wschat] WAKE sent for {}", hex::encode(target));
     // Give the relay a moment to forward before we drop the socket.
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1217,7 +1313,7 @@ async fn send_text(
     mailbox_state: &mut MailboxState,
 ) {
     // Re-introduce (with name) so an offline-then-online peer still gets our keys.
-    let _ = ws.send(Message::Binary(build_introduce(me, peer, nick, k_c2s, server_x_pub, *seq))).await;
+    let _ = ws_send(ws, Message::Binary(build_introduce(me, peer, nick, k_c2s, server_x_pub, *seq))).await;
     *seq = seq.wrapping_add(1);
 
     let mut uuid = [0u8; 16];
@@ -1227,7 +1323,7 @@ async fn send_text(
     // stays pending and gets re-sent on PEER_ONLINE.
     sent.insert(uuid, OutMsg { text: text.to_string(), delivered: false, mailbox_nonce: None });
     let frame = build_text_frame(me, peer, k_c2s, &uuid, text);
-    let _ = ws.send(Message::Binary(frame)).await;
+    let _ = ws_send(ws, Message::Binary(frame)).await;
 
     // Wake the peer with a push if we believe they're offline (so the notifier
     // can fire an FCM message-notification on their device). Skipped when online —
@@ -1238,7 +1334,7 @@ async fn send_text(
         let mut wbody = peer.id.to_vec();   // 8 bytes target id
         wbody.push(0u8);                     // is_call=0 → msg push
         let wframe = build_server_bound(me, server_x_pub, k_c2s, &pack_inner(*seq, CMD_WAKE, &wbody));
-        let _ = ws.send(Message::Binary(wframe)).await;
+        let _ = ws_send(ws, Message::Binary(wframe)).await;
         *seq = seq.wrapping_add(1);
 
         // Drop a copy in the mailbox so the message survives the offline gap
@@ -1272,7 +1368,7 @@ async fn flush_outbox(
     // sent at our (re)connect only "sticks" if the peer happened to be online
     // at that moment. Sending it here closes the gap for the common case of
     // peers that come online after us and to whom we have nothing to flush.
-    let _ = ws.send(Message::Binary(build_introduce(me, peer, nick, k_c2s, server_x_pub, *seq))).await;
+    let _ = ws_send(ws, Message::Binary(build_introduce(me, peer, nick, k_c2s, server_x_pub, *seq))).await;
     *seq = seq.wrapping_add(1);
 
     let pending: Vec<([u8; 16], String)> = sent
@@ -1284,7 +1380,7 @@ async fn flush_outbox(
         eprintln!("[wschat] flushing {} pending message(s)", pending.len());
         for (uuid, text) in pending {
             let frame = build_text_frame(me, peer, k_c2s, &uuid, &text);
-            let _ = ws.send(Message::Binary(frame)).await;
+            let _ = ws_send(ws, Message::Binary(frame)).await;
         }
     }
 
@@ -1425,7 +1521,7 @@ async fn process_peer_inner(
         let ack = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
             &pack_inner(*seq, CMD_DELIVERY_ACK, &msgid));
         *seq = seq.wrapping_add(1);
-        let _ = ws.send(Message::Binary(ack)).await;
+        let _ = ws_send(ws, Message::Binary(ack)).await;
 
         if let Some(j) = inbox.as_mut() {
             // Durable mode: dedup, journal, queue, print — DEFER read-ack until
@@ -1441,7 +1537,7 @@ async fn process_peer_inner(
             let ack = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
                 &pack_inner(*seq, CMD_READ_ACK, &msgid));
             *seq = seq.wrapping_add(1);
-            let _ = ws.send(Message::Binary(ack)).await;
+            let _ = ws_send(ws, Message::Binary(ack)).await;
         }
     } else if cmd == CMD_DELIVERY_ACK && body.len() >= 16 {
         let id: [u8; 16] = body[..16].try_into().unwrap();
@@ -1529,7 +1625,7 @@ async fn process_peer_inner(
             let ack = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
                 &pack_inner(*seq, CMD_DELIVERY_ACK, &mid));
             *seq = seq.wrapping_add(1);
-            let _ = ws.send(Message::Binary(ack)).await;
+            let _ = ws_send(ws, Message::Binary(ack)).await;
 
             if let Some(j) = inbox.as_mut() {
                 // Durable mode: journal + queue (payload = saved path), DEFER
@@ -1541,7 +1637,7 @@ async fn process_peer_inner(
                 let ack = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
                     &pack_inner(*seq, CMD_READ_ACK, &mid));
                 *seq = seq.wrapping_add(1);
-                let _ = ws.send(Message::Binary(ack)).await;
+                let _ = ws_send(ws, Message::Binary(ack)).await;
             }
         }
     }
@@ -1764,7 +1860,7 @@ async fn send_file_frames(
     );
     let offer = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
         &pack_inner(0, CMD_FILE_OFFER, json.as_bytes()));
-    if ws.send(Message::Binary(offer)).await.is_err() {
+    if !ws_send(ws, Message::Binary(offer)).await {
         eprintln!("[wschat] file offer send failed for {name}");
         return;
     }
@@ -1779,7 +1875,7 @@ async fn send_file_frames(
         cbody.extend_from_slice(slice);
         let frame = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
             &pack_inner(0, CMD_FILE_CHUNK, &cbody));
-        if ws.send(Message::Binary(frame)).await.is_err() {
+        if !ws_send(ws, Message::Binary(frame)).await {
             eprintln!("[wschat] file chunk {idx} send failed for {name}");
             return;
         }
@@ -1792,7 +1888,7 @@ async fn send_file_frames(
     ebody.extend_from_slice(mid);
     let end = build_peer_frame(me, &peer.x_pub, &peer.id, k_c2s,
         &pack_inner(0, CMD_FILE_END, &ebody));
-    if ws.send(Message::Binary(end)).await.is_err() {
+    if !ws_send(ws, Message::Binary(end)).await {
         eprintln!("[wschat] file end send failed for {name}");
         return;
     }
@@ -1831,7 +1927,7 @@ async fn send_file(
     OsRng.fill_bytes(&mut mid);
 
     // Re-introduce (with name) — parity with send_text.
-    let _ = ws.send(Message::Binary(build_introduce(me, peer, nick, k_c2s, server_x_pub, *seq))).await;
+    let _ = ws_send(ws, Message::Binary(build_introduce(me, peer, nick, k_c2s, server_x_pub, *seq))).await;
     *seq = seq.wrapping_add(1);
 
     send_file_frames(&bytes, &name, mime, &fid, &mid, me, peer, k_c2s, ws).await;
@@ -1846,7 +1942,7 @@ async fn send_file(
         let mut wbody = peer.id.to_vec();
         wbody.push(0u8);
         let wframe = build_server_bound(me, server_x_pub, k_c2s, &pack_inner(*seq, CMD_WAKE, &wbody));
-        let _ = ws.send(Message::Binary(wframe)).await;
+        let _ = ws_send(ws, Message::Binary(wframe)).await;
         *seq = seq.wrapping_add(1);
     }
 }

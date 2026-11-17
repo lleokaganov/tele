@@ -29,6 +29,17 @@ function nativeSpeaker(on) {
   try { window.TelefonAudio?.setSpeaker?.(!!on) } catch { /* no bridge here */ }
 }
 
+/** Open (or close) the native camera/microphone window in the Android shell.
+ *  The WebView grants a getUserMedia request only while this is armed, so it
+ *  must be armed on an explicit user action — placing a call, answering one,
+ *  starting or joining a group call — and nowhere else. In the browser build
+ *  there is no bridge and this is a no-op: there the browser prompts instead.
+ *  See MainActivity.MediaGate. */
+export function nativeMediaGate(on) {
+  try { on ? window.TelefonMedia?.arm?.() : window.TelefonMedia?.disarm?.() }
+  catch { /* no bridge here */ }
+}
+
 export const CALL = {
   REQUEST:        0x30,
   ACCEPT:         0x31,
@@ -216,6 +227,7 @@ export class CallManager {
 
   async call(peerId) {
     this.peerId = peerId
+    nativeMediaGate(true)        // user pressed "call" — arm the native gate
     this.ui.onState('calling')
     // Start ringing: hold the call open so we can re-send CALL.REQUEST if the
     // callee was offline and only comes online after the call push wakes them.
@@ -294,6 +306,7 @@ export class CallManager {
 
   async acceptIncoming(peerId) {
     this.peerId = peerId
+    nativeMediaGate(true)               // user pressed "answer" — arm the native gate
     this.acceptedPeer = hexOf(peerId)   // arms the SDP_OFFER gate for this peer
     this.client._sendPeer(peerId, CALL.ACCEPT, new Uint8Array())
     // Initiator side: when they get ACCEPT, they will craft an offer; we
@@ -936,6 +949,7 @@ export class CallManager {
   _tearDown(reason) {
     this._clearRing()           // catch-all: never leave a ring timer dangling
     this.acceptedPeer = null    // disarm the SDP_OFFER gate with the call
+    nativeMediaGate(false)      // and the native camera/mic gate
     nativeSpeaker(false)        // hand the audio route back to the system
     try {
       this.pc?.getSenders().forEach(s => s.track?.stop())

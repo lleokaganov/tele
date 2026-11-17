@@ -9,7 +9,7 @@
      lui.fakeRequest(btnEl)                  — demo: button spinner → toast
      lui.win(title, bodyHTML)                — open a floating window (= openWin)
      lui.closeWin(winEl)                     — close a window
-     lui.confirm(opts, onOk)                 — centered modal confirm (= confirmBox)
+     lui.confirm(opts, onOk, onCancel?)      — centered modal confirm (= confirmBox)
      lui.progress.task()                     — dynamic top progress bar factory
                                                .set / .run / .flash / .done
      lui.tabs(rootEl)                        — activate a .tabs block (auto on load)
@@ -421,7 +421,7 @@ function scrim() {
   if (!s) { s = document.createElement('div'); s.className = 'scrim'; document.body.appendChild(s) }
   return s
 }
-function confirmBox(opts, onOk) {
+function confirmBox(opts, onOk, onCancel) {
   // Defaults pulled from the i18n dictionary so the modal speaks the current
   // language unless the caller passes explicit strings.
   const { icon = '⚠️', title = t('sure'), text = '', danger = true,
@@ -456,9 +456,17 @@ function confirmBox(opts, onOk) {
     if (winStack.length) updateMobileScrim(); else s.classList.remove('on')
     try { prevFocus && prevFocus.focus({ preventScroll: true }) } catch {}
   }
-  c.querySelector('.c-cancel').addEventListener('click', close)
-  c.querySelector('.c-ok').addEventListener('click', () => { close(); onOk && onOk() })
-  s.addEventListener('click', close, { once: true })   // click on backdrop = cancel (fine for confirm)
+  // Dismissal must be observable: a caller that holds state while the dialog is
+  // open (a pending request, say) needs to know it was declined, otherwise that
+  // state leaks. `cancel()` fires onCancel exactly once, whichever way the
+  // dialog was dismissed.
+  let settled = false
+  const dismiss = () => { if (settled) return; settled = true; close(); onCancel && onCancel() }
+  c.querySelector('.c-cancel').addEventListener('click', dismiss)
+  c.querySelector('.c-ok').addEventListener('click', () => {
+    if (settled) return; settled = true; close(); onOk && onOk()
+  })
+  s.addEventListener('click', dismiss, { once: true }) // click on backdrop = cancel
   document.body.appendChild(c)
   trapFocus(c)                              // modal → trap Tab inside the confirm
   focusFirst(c)                             // move focus into it on open
